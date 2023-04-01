@@ -16,7 +16,12 @@ import (
 	"github.com/linode/terraform-provider-linode/linode/helper"
 )
 
-var engineVersion string
+var (
+	mysqlEngineVersion    string
+	mongoEngineVersion    string
+	postgresEngineVersion string
+	testRegion            string
+)
 
 func init() {
 	client, err := acceptance.GetClientForSweepers()
@@ -26,13 +31,35 @@ func init() {
 
 	v, err := helper.ResolveValidDBEngine(context.Background(), *client, "mysql")
 	if err != nil {
-		log.Fatalf("failde to get db engine version: %s", err)
+		log.Fatalf("failed to get db engine version: %s", err)
 	}
 
-	engineVersion = v.ID
+	mysqlEngineVersion = v.ID
+
+	// TODO: Uncomment once Mongo support is re-enabled
+	//v, err = helper.ResolveValidDBEngine(context.Background(), *client, "mongodb")
+	//if err != nil {
+	//	log.Fatalf("failed to get db engine version: %s", err)
+	//}
+	//
+	//mongoEngineVersion = v.ID
+
+	v, err = helper.ResolveValidDBEngine(context.Background(), *client, "postgresql")
+	if err != nil {
+		log.Fatalf("failed to get db engine version: %s", err)
+	}
+
+	postgresEngineVersion = v.ID
+
+	region, err := acceptance.GetRandomRegionWithCaps([]string{"Managed Databases"})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	testRegion = region
 }
 
-func TestAccResourceDatabaseMySQLAccessControls_basic(t *testing.T) {
+func TestAccResourceDatabaseAccessControls_MySQL(t *testing.T) {
 	t.Parallel()
 
 	resName := "linode_database_access_controls.foobar"
@@ -44,7 +71,7 @@ func TestAccResourceDatabaseMySQLAccessControls_basic(t *testing.T) {
 		CheckDestroy: checkDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.Basic(t, dbName, engineVersion, "0.0.0.0/0"),
+				Config: tmpl.MySQL(t, dbName, mysqlEngineVersion, "0.0.0.0/0", testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					checkMySQLDatabaseExists,
 					resource.TestCheckResourceAttr(resName, "allow_list.#", "1"),
@@ -52,9 +79,78 @@ func TestAccResourceDatabaseMySQLAccessControls_basic(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.Basic(t, dbName, engineVersion, "192.168.0.25/32"),
+				Config: tmpl.MySQL(t, dbName, mysqlEngineVersion, "192.168.0.25/32", testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					checkMySQLDatabaseExists,
+					resource.TestCheckResourceAttr(resName, "allow_list.#", "1"),
+					resource.TestCheckResourceAttr(resName, "allow_list.0", "192.168.0.25/32"),
+				),
+			},
+			{
+				ResourceName:      resName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccResourceDatabaseAccessControls_MongoDB(t *testing.T) {
+	t.Parallel()
+	t.Skip()
+
+	resName := "linode_database_access_controls.foobar"
+	dbName := acctest.RandomWithPrefix("tf_test")
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { acceptance.PreCheck(t) },
+		Providers:    acceptance.TestAccProviders,
+		CheckDestroy: checkDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: tmpl.MongoDB(t, dbName, mongoEngineVersion, "0.0.0.0/0", testRegion),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(resName, "allow_list.#", "1"),
+					resource.TestCheckResourceAttr(resName, "allow_list.0", "0.0.0.0/0"),
+				),
+			},
+			{
+				Config: tmpl.MongoDB(t, dbName, mongoEngineVersion, "192.168.0.25/32", testRegion),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(resName, "allow_list.#", "1"),
+					resource.TestCheckResourceAttr(resName, "allow_list.0", "192.168.0.25/32"),
+				),
+			},
+			{
+				ResourceName:      resName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccResourceDatabaseAccessControls_PostgreSQL(t *testing.T) {
+	t.Parallel()
+
+	resName := "linode_database_access_controls.foobar"
+	dbName := acctest.RandomWithPrefix("tf_test")
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { acceptance.PreCheck(t) },
+		Providers:    acceptance.TestAccProviders,
+		CheckDestroy: checkDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: tmpl.PostgreSQL(t, dbName, postgresEngineVersion, "0.0.0.0/0", testRegion),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(resName, "allow_list.#", "1"),
+					resource.TestCheckResourceAttr(resName, "allow_list.0", "0.0.0.0/0"),
+				),
+			},
+			{
+				Config: tmpl.PostgreSQL(t, dbName, postgresEngineVersion, "192.168.0.25/32", testRegion),
+				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resName, "allow_list.#", "1"),
 					resource.TestCheckResourceAttr(resName, "allow_list.0", "192.168.0.25/32"),
 				),
@@ -103,7 +199,6 @@ func checkDestroy(s *terraform.State) error {
 		}
 		if id == 0 {
 			return fmt.Errorf("Would have considered %v as %d", rs.Primary.ID, id)
-
 		}
 
 		_, err = client.GetMySQLDatabase(context.Background(), id)

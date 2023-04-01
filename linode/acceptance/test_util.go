@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,10 +27,14 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const optInTestsEnvVar = "ACC_OPT_IN_TESTS"
-const SkipInstanceReadyPollKey = "skip_instance_ready_poll"
+const (
+	optInTestsEnvVar         = "ACC_OPT_IN_TESTS"
+	SkipInstanceReadyPollKey = "skip_instance_ready_poll"
+)
 
 type AttrValidateFunc func(val string) error
+
+type ListAttrValidateFunc func(resourceName, path string, state *terraform.State) error
 
 var (
 	optInTests         map[string]struct{}
@@ -125,25 +130,19 @@ func init() {
 }
 
 func TestProvider(t *testing.T) {
+	t.Parallel()
+
 	if err := linode.Provider().InternalValidate(); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 }
 
 func PreCheck(t *testing.T) {
+	t.Helper()
+
 	if v := os.Getenv("LINODE_TOKEN"); v == "" {
 		t.Fatal("LINODE_TOKEN must be set for acceptance tests")
 	}
-}
-
-func AccTestWithProvider(config string, options map[string]interface{}) string {
-	sb := strings.Builder{}
-	sb.WriteString("provider \"linode\" {\n")
-	for key, value := range options {
-		sb.WriteString(fmt.Sprintf("\t%s = %#v\n", key, value))
-	}
-	sb.WriteString("}\n")
-	return sb.String() + config
 }
 
 func OptInTest(t *testing.T) {
@@ -161,6 +160,8 @@ func GetSSHClient(t *testing.T, user, addr string) (client *ssh.Client) {
 	if err != nil {
 		t.Fatalf("failed to parse private key: %s", err)
 	}
+
+	// #nosec G106 -- Test data, not used in production
 	config := &ssh.ClientConfig{
 		User:            "root",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
@@ -261,6 +262,51 @@ func CheckResourceAttrNotEqual(resName string, path, notValue string) resource.T
 	}
 }
 
+func CheckResourceAttrListContains(resName, path, desiredValue string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		rs, ok := s.RootModule().Resources[resName]
+		if !ok {
+			return fmt.Errorf("Not found: %s", resName)
+		}
+
+		length, err := strconv.Atoi(rs.Primary.Attributes[path+".#"])
+		if err != nil {
+			return fmt.Errorf("attribute %s does not exist", path)
+		}
+
+		for i := 0; i < length; i++ {
+			if rs.Primary.Attributes[path+"."+strconv.Itoa(i)] == desiredValue {
+				return nil
+			}
+		}
+
+		return fmt.Errorf("Desired value not found in resource attribute")
+	}
+}
+
+func LoopThroughStringList(resName, path string, listValidateFunc ListAttrValidateFunc) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		rs, ok := s.RootModule().Resources[resName]
+		if !ok {
+			return fmt.Errorf("Not found: %s", resName)
+		}
+
+		length, err := strconv.Atoi(rs.Primary.Attributes[path+".#"])
+		if err != nil {
+			return fmt.Errorf("attribute %s does not exist", path)
+		}
+
+		for i := 0; i < length; i++ {
+			err := listValidateFunc(resName, path+"."+strconv.Itoa(i), s)
+			if err != nil {
+				return fmt.Errorf("Value not found:%s", err)
+			}
+		}
+
+		return nil
+	}
+}
+
 func CheckLKEClusterDestroy(s *terraform.State) error {
 	client := TestAccProvider.Meta().(*helper.ProviderMeta).Client
 
@@ -303,7 +349,6 @@ func CheckVolumeDestroy(s *terraform.State) error {
 		}
 		if id == 0 {
 			return fmt.Errorf("Would have considered %v as %d", rs.Primary.ID, id)
-
 		}
 
 		_, err = client.GetVolume(context.Background(), id)
@@ -349,9 +394,9 @@ func CheckVolumeExists(name string, volume *linodego.Volume) resource.TestCheckF
 	}
 }
 
-func CheckFirewallExists(name string, firewall *linodego.Firewall) resource.TestCheckFunc {
+func CheckFirewallExists(provider *schema.Provider, name string, firewall *linodego.Firewall) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		client := TestAccProvider.Meta().(*helper.ProviderMeta).Client
+		client := provider.Meta().(*helper.ProviderMeta).Client
 
 		rs, ok := s.RootModule().Resources[name]
 		if !ok {
@@ -410,6 +455,8 @@ func CheckEventAbsent(name string, entityType linodego.EntityType, action linode
 }
 
 func ExecuteTemplate(t *testing.T, templateName string, data interface{}) string {
+	t.Helper()
+
 	var b bytes.Buffer
 
 	err := ConfigTemplates.ExecuteTemplate(&b, templateName, data)
@@ -449,7 +496,7 @@ func CreateTestProvider() (*schema.Provider, map[string]*schema.Provider) {
 
 type ProviderMetaModifier func(ctx context.Context, config *helper.ProviderMeta) error
 
-func ModifyProviderMeta(t *testing.T, provider *schema.Provider, modifier ProviderMetaModifier) {
+func ModifyProviderMeta(provider *schema.Provider, modifier ProviderMetaModifier) {
 	oldConfigure := provider.ConfigureContextFunc
 
 	provider.ConfigureContextFunc = func(ctx context.Context, data *schema.ResourceData) (interface{}, diag.Diagnostics) {
@@ -459,9 +506,89 @@ func ModifyProviderMeta(t *testing.T, provider *schema.Provider, modifier Provid
 		}
 
 		if err := modifier(ctx, config.(*helper.ProviderMeta)); err != nil {
-			t.Fatal(err)
+			return nil, diag.FromErr(err)
 		}
 
 		return config, nil
 	}
+}
+
+// GetRegionsWithCaps returns a list of regions that support the given capabilities.
+func GetRegionsWithCaps(capabilities []string) ([]string, error) {
+	result := make([]string, 0)
+
+	client, err := GetClientForSweepers()
+	if err != nil {
+		return nil, err
+	}
+
+	regions, err := client.ListRegions(context.Background(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	regionHasCaps := func(r linodego.Region) bool {
+		capsMap := make(map[string]bool)
+
+		for _, c := range r.Capabilities {
+			capsMap[strings.ToUpper(c)] = true
+		}
+
+		for _, c := range capabilities {
+			if _, ok := capsMap[strings.ToUpper(c)]; !ok {
+				return false
+			}
+		}
+
+		return true
+	}
+
+	for _, region := range regions {
+		if region.Status != "ok" || !regionHasCaps(region) {
+			continue
+		}
+
+		result = append(result, region.ID)
+	}
+
+	return result, nil
+}
+
+// GetRandomRegionWithCaps gets a random region given a list of region capabilities.
+func GetRandomRegionWithCaps(capabilities []string) (string, error) {
+	rand.Seed(time.Now().UnixNano())
+
+	regions, err := GetRegionsWithCaps(capabilities)
+	if err != nil {
+		return "", nil
+	}
+
+	if len(regions) < 1 {
+		return "", fmt.Errorf("no region found with the provided caps")
+	}
+
+	// #nosec G404 -- Test data, doesn't need to be cryptography
+	return regions[rand.Intn(len(regions))], nil
+}
+
+// GetRandomOBJCluster gets a random Object Storage cluster.
+func GetRandomOBJCluster() (string, error) {
+	rand.Seed(time.Now().UnixNano())
+
+	client, err := GetClientForSweepers()
+	if err != nil {
+		return "", err
+	}
+
+	clusters, err := client.ListObjectStorageClusters(context.Background(), nil)
+	if err != nil {
+		return "", err
+	}
+
+	if len(clusters) < 1 {
+		return "", fmt.Errorf("no clusters found")
+	}
+
+	// #nosec G404 -- Test data, doesn't need to be cryptography
+	return clusters[rand.Intn(len(clusters))].ID, nil
 }

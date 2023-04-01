@@ -95,6 +95,7 @@ func readResource(ctx context.Context, d *schema.ResourceData, meta interface{})
 	d.Set("group", instance.Group)
 	d.Set("tags", instance.Tags)
 	d.Set("booted", isInstanceBooted(instance))
+	d.Set("host_uuid", instance.HostUUID)
 
 	flatSpecs := flattenInstanceSpecs(*instance)
 	flatAlerts := flattenInstanceAlerts(*instance)
@@ -187,15 +188,23 @@ func createResource(ctx context.Context, d *schema.ResourceData, meta interface{
 	// If we don't have disks and we don't have configs, use the single API call approach
 	if !disksOk && !configsOk {
 		for _, key := range d.Get("authorized_keys").([]interface{}) {
+			if key == nil {
+				return diag.Errorf("invalid input for authorized_keys: keys cannot be empty or null")
+			}
+
 			createOpts.AuthorizedKeys = append(createOpts.AuthorizedKeys, key.(string))
 		}
-		for _, key := range d.Get("authorized_users").([]interface{}) {
-			createOpts.AuthorizedUsers = append(createOpts.AuthorizedUsers, key.(string))
+		for _, user := range d.Get("authorized_users").([]interface{}) {
+			if user == nil {
+				return diag.Errorf("invalid input for authorized_users: users cannot be empty or null")
+			}
+
+			createOpts.AuthorizedUsers = append(createOpts.AuthorizedUsers, user.(string))
 		}
 		createOpts.RootPass = d.Get("root_pass").(string)
 		if createOpts.RootPass == "" {
 			var err error
-			createOpts.RootPass, err = createRandomRootPassword()
+			createOpts.RootPass, err = helper.CreateRandomRootPassword()
 			if err != nil {
 				return diag.FromErr(err)
 			}
@@ -230,12 +239,18 @@ func createResource(ctx context.Context, d *schema.ResourceData, meta interface{
 		createOpts.Booted = &boolFalse // necessary to prepare disks and configs
 	}
 
+	createPoller, err := client.NewEventPollerWithoutEntity(linodego.EntityLinode, linodego.ActionLinodeCreate)
+	if err != nil {
+		return diag.Errorf("failed to initialize event poller: %s", err)
+	}
+
 	instance, err := client.CreateInstance(ctx, createOpts)
 	if err != nil {
 		return diag.Errorf("Error creating a Linode Instance: %s", err)
 	}
 
 	d.SetId(fmt.Sprintf("%d", instance.ID))
+	createPoller.EntityID = instance.ID
 
 	var ips []string
 	for _, ip := range instance.IPv4 {
@@ -288,8 +303,7 @@ func createResource(ctx context.Context, d *schema.ResourceData, meta interface{
 	var configIDLabelMap map[string]int
 
 	if disksOk {
-		_, err = client.WaitForEventFinished(ctx, instance.ID, linodego.EntityLinode, linodego.ActionLinodeCreate,
-			*instance.Created, getDeadlineSeconds(ctx, d))
+		_, err = createPoller.WaitForFinished(ctx, getDeadlineSeconds(ctx, d))
 		if err != nil {
 			return diag.Errorf("Error waiting for Instance to finish creating: %s", err)
 		}
@@ -349,13 +363,17 @@ func createResource(ctx context.Context, d *schema.ResourceData, meta interface{
 
 	if createOpts.Booted == nil || !*createOpts.Booted {
 		if disksOk && configsOk && (bootedNull || booted) {
+			p, err := client.NewEventPoller(ctx, instance.ID, linodego.EntityLinode, linodego.ActionLinodeBoot)
+			if err != nil {
+				return diag.Errorf("failed to initialize event poller: %s", err)
+			}
+
 			if err = client.BootInstance(ctx, instance.ID, bootConfig); err != nil {
 				return diag.Errorf("Error booting Linode instance %d: %s", instance.ID, err)
 			}
 
-			if _, err = client.WaitForEventFinished(
-				ctx, instance.ID, linodego.EntityLinode, linodego.ActionLinodeBoot,
-				*instance.Created, getDeadlineSeconds(ctx, d),
+			if _, err = p.WaitForFinished(
+				ctx, getDeadlineSeconds(ctx, d),
 			); err != nil {
 				return diag.Errorf("Error booting Linode instance %d: %s", instance.ID, err)
 			}
@@ -392,7 +410,8 @@ func findDiskByFS(disks []linodego.InstanceDisk, fs linodego.DiskFilesystem) *li
 //
 // returns bool describing whether the linode needs to be restarted.
 func adjustSwapSizeIfNeeded(
-	ctx context.Context, d *schema.ResourceData, client *linodego.Client, instance *linodego.Instance) (bool, error) {
+	ctx context.Context, d *schema.ResourceData, client *linodego.Client, instance *linodego.Instance,
+) (bool, error) {
 	if !d.HasChange("swap_size") {
 		return false, nil
 	}
@@ -625,6 +644,11 @@ func updateResource(ctx context.Context, d *schema.ResourceData, meta interface{
 	}
 
 	if rebootInstance && len(diskIDLabelMap) > 0 && len(updatedConfigMap) > 0 && bootConfig > 0 {
+		p, err := client.NewEventPoller(ctx, id, linodego.EntityLinode, linodego.ActionLinodeReboot)
+		if err != nil {
+			return diag.Errorf("failed to initialize event poller: %s", err)
+		}
+
 		err = client.RebootInstance(ctx, instance.ID, bootConfig)
 
 		log.Printf("[INFO] Instance [%d] will be rebooted\n", instance.ID)
@@ -632,11 +656,11 @@ func updateResource(ctx context.Context, d *schema.ResourceData, meta interface{
 		if err != nil {
 			return diag.Errorf("Error rebooting Instance %d: %s", instance.ID, err)
 		}
-		_, err = client.WaitForEventFinished(ctx, id, linodego.EntityLinode, linodego.ActionLinodeReboot,
-			*instance.Created, getDeadlineSeconds(ctx, d))
+		_, err = p.WaitForFinished(ctx, getDeadlineSeconds(ctx, d))
 		if err != nil {
 			return diag.Errorf("Error waiting for Instance %d to finish rebooting: %s", instance.ID, err)
 		}
+
 		if _, err = client.WaitForInstanceStatus(
 			ctx, instance.ID, linodego.InstanceRunning, getDeadlineSeconds(ctx, d),
 		); err != nil {
@@ -657,7 +681,12 @@ func deleteResource(ctx context.Context, d *schema.ResourceData, meta interface{
 	if err != nil {
 		return diag.Errorf("Error parsing Linode Instance ID %s as int", d.Id())
 	}
-	minDelete := time.Now().AddDate(0, 0, -1)
+
+	p, err := client.NewEventPoller(ctx, int(id), linodego.EntityLinode, linodego.ActionLinodeDelete)
+	if err != nil {
+		return diag.Errorf("failed to initialize event poller: %s", err)
+	}
+
 	err = client.DeleteInstance(ctx, int(id))
 	if err != nil {
 		return diag.Errorf("Error deleting Linode instance %d: %s", id, err)
@@ -665,8 +694,7 @@ func deleteResource(ctx context.Context, d *schema.ResourceData, meta interface{
 
 	if !meta.(*helper.ProviderMeta).Config.SkipInstanceDeletePoll {
 		// Wait for full deletion to assure volumes are detached
-		if _, err = client.WaitForEventFinished(ctx, int(id), linodego.EntityLinode, linodego.ActionLinodeDelete,
-			minDelete, getDeadlineSeconds(ctx, d)); err != nil {
+		if _, err = p.WaitForFinished(ctx, getDeadlineSeconds(ctx, d)); err != nil {
 			return diag.Errorf("failed to wait for instance %d to be deleted: %s", id, err)
 		}
 	}

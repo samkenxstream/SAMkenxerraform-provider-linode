@@ -2,7 +2,6 @@ package instance
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -148,7 +147,7 @@ func updateInstanceConfigs(
 		configMap[config.Label] = config
 	}
 
-	oldConfigLabels := make([]string, len(tfConfigsOld.([]interface{})))
+	oldConfigLabels := make([]string, 0)
 
 	var oldBootInterfaces, newBootInterfaces []string
 	for _, tfConfigOld := range tfConfigsOld.([]interface{}) {
@@ -163,7 +162,7 @@ func updateInstanceConfigs(
 		}
 	}
 	tfConfigs := tfConfigsNew.([]interface{})
-	updatedConfigs = make([]*linodego.InstanceConfig, len(tfConfigs))
+	updatedConfigs = make([]*linodego.InstanceConfig, 0)
 	updatedConfigMap = make(map[string]int, len(tfConfigs))
 	for _, tfConfig := range tfConfigs {
 		tfc, _ := tfConfig.(map[string]interface{})
@@ -248,8 +247,10 @@ func updateInstanceConfigs(
 				return rebootInstance, updatedConfigMap, updatedConfigs, err
 			}
 			for _, config := range configIDMap {
+				cfg := config
+
 				updatedConfigMap[config.Label] = config.ID
-				updatedConfigs = append(updatedConfigs, &config)
+				updatedConfigs = append(updatedConfigs, &cfg)
 			}
 		}
 	}
@@ -398,7 +399,7 @@ func createInstanceDisk(
 			diskOpts.RootPass = rootPass.(string)
 		} else {
 			var err error
-			diskOpts.RootPass, err = createRandomRootPassword()
+			diskOpts.RootPass, err = helper.CreateRandomRootPassword()
 			if err != nil {
 				return nil, err
 			}
@@ -406,12 +407,22 @@ func createInstanceDisk(
 
 		if authorizedKeys, ok := disk["authorized_keys"]; ok {
 			for _, sshKey := range authorizedKeys.([]interface{}) {
+				if sshKey == nil {
+					return nil, fmt.Errorf(
+						"invalid input for disk authorized_keys: keys cannot be empty or null")
+				}
+
 				diskOpts.AuthorizedKeys = append(diskOpts.AuthorizedKeys, sshKey.(string))
 			}
 		}
 
 		if authorizedUsers, ok := disk["authorized_users"]; ok {
 			for _, user := range authorizedUsers.([]interface{}) {
+				if user == nil {
+					return nil, fmt.Errorf(
+						"invalid input for disk authorized_users: users cannot be empty or null")
+				}
+
 				diskOpts.AuthorizedUsers = append(diskOpts.AuthorizedUsers, user.(string))
 			}
 		}
@@ -432,13 +443,17 @@ func createInstanceDisk(
 		}
 	}
 
+	p, err := client.NewEventPoller(ctx, instance.ID, linodego.EntityLinode, linodego.ActionDiskCreate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize event poller: %s", err)
+	}
+
 	instanceDisk, err := client.CreateInstanceDisk(ctx, instance.ID, diskOpts)
 	if err != nil {
 		return nil, fmt.Errorf("Error creating Linode instance %d disk: %s", instance.ID, err)
 	}
 
-	_, err = client.WaitForEventFinished(ctx, instance.ID, linodego.EntityLinode,
-		linodego.ActionDiskCreate, *instanceDisk.Created, getDeadlineSeconds(ctx, d))
+	_, err = p.WaitForFinished(ctx, getDeadlineSeconds(ctx, d))
 	if err != nil {
 		return nil, fmt.Errorf("Error waiting for Linode instance %d disk: %s", instanceDisk.ID, err)
 	}
@@ -448,7 +463,8 @@ func createInstanceDisk(
 
 // getInstanceDisks returns a map of disks for a given instance that is indexed by label.
 func getInstanceDisks(
-	ctx context.Context, client linodego.Client, instanceID int) (map[string]linodego.InstanceDisk, error) {
+	ctx context.Context, client linodego.Client, instanceID int,
+) (map[string]linodego.InstanceDisk, error) {
 	disks, err := client.ListInstanceDisks(ctx, instanceID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("Error fetching the disks for Instance %d: %s", instanceID, err)
@@ -467,7 +483,8 @@ func getInstanceDisks(
 
 // getInstanceDiskLabelIDMap returns a map of an instances disk labels to their corresponding IDs.
 func getInstanceDiskLabelIDMap(
-	ctx context.Context, client linodego.Client, d *schema.ResourceData, instanceID int) (map[string]int, error) {
+	ctx context.Context, client linodego.Client, d *schema.ResourceData, instanceID int,
+) (map[string]int, error) {
 	diskSpecs := d.Get("disk").([]interface{})
 	disks, err := getInstanceDisks(ctx, client, instanceID)
 	if err != nil {
@@ -507,7 +524,8 @@ func getInstanceDiskSpecChange(d *schema.ResourceData) (oldDiskSpecs, newDiskSpe
 
 // getInstanceDiskSpecDiffs sorts the disk specs by added, removed, and existing.
 func getInstanceDiskSpecDiffs(
-	oldDiskSpecs, newDiskSpecs map[string]diskSpec) (added, removed, existing map[string]diskSpec) {
+	oldDiskSpecs, newDiskSpecs map[string]diskSpec,
+) (added, removed, existing map[string]diskSpec) {
 	added = make(map[string]diskSpec)
 	removed = make(map[string]diskSpec)
 	existing = make(map[string]diskSpec)
@@ -537,7 +555,8 @@ func getInstanceDiskSpecDiffs(
 // This function will also warn when there are disks attached to an instance which are not managed by
 // terraform.
 func updateInstanceDisks(
-	ctx context.Context, client linodego.Client, d *schema.ResourceData, instance linodego.Instance) (bool, error) {
+	ctx context.Context, client linodego.Client, d *schema.ResourceData, instance linodego.Instance,
+) (bool, error) {
 	oldDisk, newDisk := getInstanceDiskSpecChange(d)
 	added, removed, existing := getInstanceDiskSpecDiffs(oldDisk, newDisk)
 	disks, err := getInstanceDisks(ctx, client, instance.ID)
@@ -563,11 +582,17 @@ func updateInstanceDisks(
 			// It's ok if a removed disk is not found
 			continue
 		}
+
+		p, err := client.NewEventPoller(ctx, instance.ID, linodego.EntityLinode, linodego.ActionDiskDelete)
+		if err != nil {
+			return false, fmt.Errorf("failed to initialize event poller: %s", err)
+		}
+
 		if err := client.DeleteInstanceDisk(ctx, instance.ID, disk.ID); err != nil {
 			return hasChanges, err
 		}
-		_, err = client.WaitForEventFinished(ctx, instance.ID, linodego.EntityLinode,
-			linodego.ActionDiskDelete, *instance.Created, getDeadlineSeconds(ctx, d))
+
+		_, err = p.WaitForFinished(ctx, getDeadlineSeconds(ctx, d))
 		if err != nil {
 			return hasChanges, fmt.Errorf(
 				"error waiting for Instance %d Disk %d to finish deleting: %s", instance.ID, disk.ID, err)
@@ -626,19 +651,10 @@ func hashString(key string) string {
 	return base64.StdEncoding.EncodeToString(hash[:])
 }
 
-func createRandomRootPassword() (string, error) {
-	rawRootPass := make([]byte, 50)
-	_, err := rand.Read(rawRootPass)
-	if err != nil {
-		return "", fmt.Errorf("Failed to generate random password")
-	}
-	rootPass := base64.StdEncoding.EncodeToString(rawRootPass)
-	return rootPass, nil
-}
-
 // ensureInstanceOffline ensures that a given instance is offline.
 func ensureInstanceOffline(
-	ctx context.Context, client *linodego.Client, instanceID, timeout int) (instance *linodego.Instance, err error) {
+	ctx context.Context, client *linodego.Client, instanceID, timeout int,
+) (instance *linodego.Instance, err error) {
 	if instance, err = client.GetInstance(ctx, instanceID); err != nil {
 		return
 	}
@@ -684,21 +700,16 @@ func changeInstanceType(
 		Type:                targetType,
 	}
 
+	p, err := client.NewEventPoller(ctx, instance.ID, linodego.EntityLinode, linodego.ActionLinodeResize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize event poller %d: %s", instance.ID, err)
+	}
+
 	if err := client.ResizeInstance(ctx, instance.ID, resizeOpts); err != nil {
 		return nil, fmt.Errorf("Error resizing Instance %d: %s", instance.ID, err)
 	}
 
-	// This is necessary as linode_resize events are scheduled to be created long-after the initial
-	// resize request. In order to ensure we're polling on the correct event, we need use the
-	// creation date of the pre-resize event.
-	resizeCreateEvent, err := helper.GetLatestEvent(ctx, client, instance.ID, linodego.EntityLinode,
-		linodego.ActionLinodeResizeCreate)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get instance resize_create event %d: %s", instance.ID, err)
-	}
-
-	_, err = client.WaitForEventFinished(ctx, instance.ID, linodego.EntityLinode, linodego.ActionLinodeResize,
-		*resizeCreateEvent.Created, getDeadlineSeconds(ctx, d))
+	_, err = p.WaitForFinished(ctx, getDeadlineSeconds(ctx, d))
 	if err != nil {
 		return nil, fmt.Errorf("Error waiting for instance %d to finish resizing: %s", instance.ID, err)
 	}
@@ -772,13 +783,17 @@ func changeInstanceDiskSize(
 		return fmt.Errorf("Error waiting for Instance %d to go offline: %s", instance.ID, err)
 	}
 
+	p, err := client.NewEventPoller(ctx, instance.ID, linodego.EntityLinode, linodego.ActionDiskResize)
+	if err != nil {
+		return fmt.Errorf("failed to initialize event poller: %s", err)
+	}
+
 	if err := client.ResizeInstanceDisk(ctx, instance.ID, disk.ID, targetSize); err != nil {
 		return fmt.Errorf("Error resizing disk %d for Instance %d: %s", disk.ID, instance.ID, err)
 	}
 
 	// Wait for the disk resize operation to complete, and boot instance.
-	_, err := client.WaitForEventFinished(ctx, instance.ID, linodego.EntityLinode, linodego.ActionDiskResize,
-		*disk.Updated, getDeadlineSeconds(ctx, d))
+	_, err = p.WaitForFinished(ctx, getDeadlineSeconds(ctx, d))
 	if err != nil {
 		return fmt.Errorf("Error waiting for resize of Instance %d Disk %d: %s", instance.ID, disk.ID, err)
 	}
@@ -806,7 +821,8 @@ func privateIP(ip net.IP) bool {
 }
 
 func assignConfigDevice(
-	device *linodego.InstanceConfigDevice, dev map[string]interface{}, diskIDLabelMap map[string]int) error {
+	device *linodego.InstanceConfigDevice, dev map[string]interface{}, diskIDLabelMap map[string]int,
+) error {
 	if label, ok := dev["disk_label"].(string); ok && len(label) > 0 {
 		if dev["disk_id"], ok = diskIDLabelMap[label]; !ok {
 			return fmt.Errorf(`Error mapping disk label "%s" to ID`, dev["disk_label"])
@@ -927,7 +943,8 @@ func applyInstanceTypeChange(
 
 // detachConfigVolumes detaches any volumes associated with an InstanceConfig.Devices struct.
 func detachConfigVolumes(
-	ctx context.Context, dmap linodego.InstanceConfigDeviceMap, detacher volumeDetacher) error {
+	ctx context.Context, dmap linodego.InstanceConfigDeviceMap, detacher volumeDetacher,
+) error {
 	// Preallocate our slice of config devices
 	drives := []*linodego.InstanceConfigDevice{
 		dmap.SDA, dmap.SDB, dmap.SDC, dmap.SDD, dmap.SDE, dmap.SDF, dmap.SDG, dmap.SDH,
@@ -977,7 +994,6 @@ func detachConfigVolumes(
 }
 
 func isInstanceBooted(instance *linodego.Instance) bool {
-
 	// For diffing purposes, transition states need to be treated as
 	// booted == true. This is because these statuses will eventually
 	// result in a powered on Linode.
@@ -1002,7 +1018,8 @@ func validateBooted(ctx context.Context, d *schema.ResourceData) error {
 }
 
 func handleBootedUpdate(
-	ctx context.Context, d *schema.ResourceData, meta interface{}, instanceID, configID int) error {
+	ctx context.Context, d *schema.ResourceData, meta interface{}, instanceID, configID int,
+) error {
 	client := meta.(*helper.ProviderMeta).Client
 
 	deadlineSeconds := getDeadlineSeconds(ctx, d)
@@ -1033,10 +1050,9 @@ func handleBootedUpdate(
 	case linodego.InstanceShuttingDown:
 		log.Printf("[INFO] Awaiting instance (%d) shutdown before continuing", instanceID)
 
-		_, err = client.WaitForEventFinished(ctx, instanceID, linodego.EntityLinode,
-			linodego.ActionLinodeShutdown, *inst.Created, deadlineSeconds)
+		_, err = client.WaitForInstanceStatus(ctx, instanceID, linodego.InstanceOffline, 120)
 		if err != nil {
-			return fmt.Errorf("failed to wait for instance shutdown: %s", err)
+			return fmt.Errorf("failed to wait for instance offline: %s", err)
 		}
 
 		instStatus = linodego.InstanceOffline
@@ -1074,12 +1090,16 @@ func handleBootedUpdate(
 func shutDownInstanceSync(ctx context.Context, client linodego.Client, instanceID, deadlineSeconds int) error {
 	log.Printf("[INFO] Shutting down instance (%d)", instanceID)
 
+	p, err := client.NewEventPoller(ctx, instanceID, linodego.EntityLinode, linodego.ActionLinodeShutdown)
+	if err != nil {
+		return fmt.Errorf("failed to initialize event poller: %s", err)
+	}
+
 	if err := client.ShutdownInstance(ctx, instanceID); err != nil {
 		return fmt.Errorf("failed to shutdown instance: %s", err)
 	}
 
-	if _, err := client.WaitForEventFinished(ctx, instanceID, linodego.EntityLinode,
-		linodego.ActionLinodeShutdown, time.Now(), deadlineSeconds); err != nil {
+	if _, err := p.WaitForFinished(ctx, deadlineSeconds); err != nil {
 		return fmt.Errorf("failed to wait for instance shutdown: %s", err)
 	}
 
@@ -1089,12 +1109,16 @@ func shutDownInstanceSync(ctx context.Context, client linodego.Client, instanceI
 func bootInstanceSync(ctx context.Context, client linodego.Client, instanceID, configID, deadlineSeconds int) error {
 	log.Printf("[INFO] Booting instance (%d)", instanceID)
 
+	p, err := client.NewEventPoller(ctx, instanceID, linodego.EntityLinode, linodego.ActionLinodeBoot)
+	if err != nil {
+		return fmt.Errorf("failed to initialize event poller: %s", err)
+	}
+
 	if err := client.BootInstance(ctx, instanceID, configID); err != nil {
 		return fmt.Errorf("failed to boot instance: %s", err)
 	}
 
-	if _, err := client.WaitForEventFinished(ctx, instanceID, linodego.EntityLinode,
-		linodego.ActionLinodeBoot, time.Now(), deadlineSeconds); err != nil {
+	if _, err := p.WaitForFinished(ctx, deadlineSeconds); err != nil {
 		return fmt.Errorf("failed to wait for instance boot: %s", err)
 	}
 
@@ -1102,7 +1126,8 @@ func bootInstanceSync(ctx context.Context, client linodego.Client, instanceID, c
 }
 
 func getDiskSizeSum(ctx context.Context, d *schema.ResourceData,
-	client *linodego.Client, instanceID int) (int, error) {
+	client *linodego.Client, instanceID int,
+) (int, error) {
 	disks, err := client.ListInstanceDisks(ctx, instanceID, nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get instance disks: %s", err)
@@ -1117,7 +1142,8 @@ func getDiskSizeSum(ctx context.Context, d *schema.ResourceData,
 }
 
 func getFirstDiskWithFilesystem(disks []linodego.InstanceDisk,
-	filesystems []linodego.DiskFilesystem) *linodego.InstanceDisk {
+	filesystems []linodego.DiskFilesystem,
+) *linodego.InstanceDisk {
 	for _, disk := range disks {
 		for _, filesystem := range filesystems {
 			if disk.Filesystem == filesystem {
@@ -1130,8 +1156,8 @@ func getFirstDiskWithFilesystem(disks []linodego.InstanceDisk,
 }
 
 func validateImplicitDisks(ctx context.Context,
-	client *linodego.Client, instanceID int) error {
-
+	client *linodego.Client, instanceID int,
+) error {
 	disks, err := client.ListInstanceDisks(ctx, instanceID, nil)
 	if err != nil {
 		return fmt.Errorf("failed to get instance disks: %s", err)
@@ -1151,7 +1177,8 @@ func validateImplicitDisks(ctx context.Context,
 }
 
 func getPrimaryImplicitDisk(ctx context.Context, d *schema.ResourceData,
-	client *linodego.Client, instanceID int) (*linodego.InstanceDisk, error) {
+	client *linodego.Client, instanceID int,
+) (*linodego.InstanceDisk, error) {
 	disks, err := client.ListInstanceDisks(ctx, instanceID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get instance disks: %s", err)
@@ -1168,7 +1195,8 @@ func getPrimaryImplicitDisk(ctx context.Context, d *schema.ResourceData,
 }
 
 func waitForInstanceDiskSizeChange(ctx context.Context, client *linodego.Client, instanceID,
-	diskID, oldSize, timeoutSeconds int) (*linodego.InstanceDisk, error) {
+	diskID, oldSize, timeoutSeconds int,
+) (*linodego.InstanceDisk, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 

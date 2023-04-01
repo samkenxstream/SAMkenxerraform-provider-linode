@@ -16,10 +16,15 @@ import (
 	"github.com/linode/terraform-provider-linode/linode/instancesharedips/tmpl"
 )
 
-const resourcePrimaryNode = "linode_instance.primary"
-const resourceSecondaryNode = "linode_instance.secondary"
-const resourcePrimaryShare = "linode_instance_shared_ips.share-primary"
-const resourceSecondaryShare = "linode_instance_shared_ips.share-secondary"
+const (
+	resourcePrimaryNode    = "linode_instance.primary"
+	resourceSecondaryNode  = "linode_instance.secondary"
+	resourcePrimaryShare   = "linode_instance_shared_ips.share-primary"
+	resourceSecondaryShare = "linode_instance_shared_ips.share-secondary"
+)
+
+// TODO: don't hardcode this once IPv6 sharing has a proper capability string
+const testRegion = "eu-central"
 
 func TestAccInstanceSharedIPs_update(t *testing.T) {
 	t.Parallel()
@@ -33,7 +38,7 @@ func TestAccInstanceSharedIPs_update(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.SingleNode(t, name),
+				Config: tmpl.SingleNode(t, name, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resourcePrimaryNode, &primaryInstance),
 					acceptance.CheckInstanceExists(resourceSecondaryNode, &secondaryInstance),
@@ -45,7 +50,7 @@ func TestAccInstanceSharedIPs_update(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.DualNode(t, name),
+				Config: tmpl.DualNode(t, name, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resourcePrimaryNode, &primaryInstance),
 					acceptance.CheckInstanceExists(resourceSecondaryNode, &secondaryInstance),
@@ -58,7 +63,7 @@ func TestAccInstanceSharedIPs_update(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.SingleNode(t, name),
+				Config: tmpl.SingleNode(t, name, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resourcePrimaryNode, &primaryInstance),
 					acceptance.CheckInstanceExists(resourceSecondaryNode, &secondaryInstance),

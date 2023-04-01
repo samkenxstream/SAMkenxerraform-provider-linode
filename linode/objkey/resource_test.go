@@ -3,6 +3,7 @@ package objkey_test
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,11 +17,20 @@ import (
 	"github.com/linode/terraform-provider-linode/linode/objkey/tmpl"
 )
 
+var testCluster string
+
 func init() {
 	resource.AddTestSweepers("linode_object_storage_key", &resource.Sweeper{
 		Name: "linode_object_storage_key",
 		F:    sweep,
 	})
+
+	cluster, err := acceptance.GetRandomOBJCluster()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	testCluster = cluster
 }
 
 func sweep(prefix string) error {
@@ -38,7 +48,6 @@ func sweep(prefix string) error {
 			continue
 		}
 		err := client.DeleteObjectStorageKey(context.Background(), objectStorageKey.ID)
-
 		if err != nil {
 			return fmt.Errorf("Error destroying %s during sweep: %s", objectStorageKey.Label, err)
 		}
@@ -51,7 +60,7 @@ func TestAccResourceObjectKey_basic(t *testing.T) {
 	t.Parallel()
 
 	resName := "linode_object_storage_key.foobar"
-	var objectStorageKeyLabel = acctest.RandomWithPrefix("tf_test")
+	objectStorageKeyLabel := acctest.RandomWithPrefix("tf_test")
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { acceptance.PreCheck(t) },
@@ -77,7 +86,7 @@ func TestAccResourceObjectKey_limited(t *testing.T) {
 	t.Parallel()
 
 	resName := "linode_object_storage_key.foobar"
-	var objectStorageKeyLabel = acctest.RandomWithPrefix("tf-test")
+	objectStorageKeyLabel := acctest.RandomWithPrefix("tf-test")
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { acceptance.PreCheck(t) },
@@ -85,7 +94,7 @@ func TestAccResourceObjectKey_limited(t *testing.T) {
 		CheckDestroy: checkObjectKeyDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.Limited(t, objectStorageKeyLabel),
+				Config: tmpl.Limited(t, objectStorageKeyLabel, testCluster),
 				Check: resource.ComposeTestCheckFunc(
 					checkObjectKeyExists,
 					checkObjectKeySecretAccessible,
@@ -96,8 +105,8 @@ func TestAccResourceObjectKey_limited(t *testing.T) {
 					resource.TestCheckResourceAttr(resName, "bucket_access.#", "2"),
 					resource.TestCheckResourceAttrSet(resName, "bucket_access.0.bucket_name"),
 					resource.TestCheckResourceAttrSet(resName, "bucket_access.1.bucket_name"),
-					resource.TestCheckResourceAttr(resName, "bucket_access.0.cluster", "us-east-1"),
-					resource.TestCheckResourceAttr(resName, "bucket_access.1.cluster", "us-east-1"),
+					resource.TestCheckResourceAttr(resName, "bucket_access.0.cluster", testCluster),
+					resource.TestCheckResourceAttr(resName, "bucket_access.1.cluster", testCluster),
 					resource.TestCheckResourceAttr(resName, "bucket_access.0.permissions", "read_only"),
 					resource.TestCheckResourceAttr(resName, "bucket_access.1.permissions", "read_write"),
 				),
@@ -109,7 +118,7 @@ func TestAccResourceObjectKey_limited(t *testing.T) {
 func TestAccResourceObjectKey_update(t *testing.T) {
 	t.Parallel()
 	resName := "linode_object_storage_key.foobar"
-	var objectStorageKeyLabel = acctest.RandomWithPrefix("tf_test")
+	objectStorageKeyLabel := acctest.RandomWithPrefix("tf_test")
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { acceptance.PreCheck(t) },
@@ -194,7 +203,6 @@ func checkObjectKeyDestroy(s *terraform.State) error {
 		}
 		if id == 0 {
 			return fmt.Errorf("Would have considered %v as %d", rs.Primary.ID, id)
-
 		}
 
 		_, err = client.GetObjectStorageKey(context.Background(), id)

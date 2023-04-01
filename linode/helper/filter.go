@@ -19,6 +19,14 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
+// validFilterValueTypes is a list of valid underlying types for filterable fields.
+var validFilterValueTypes = []reflect.Kind{
+	reflect.String, reflect.Int,
+	reflect.Int32, reflect.Array,
+	reflect.Float64, reflect.Float32,
+	reflect.Slice, reflect.Bool,
+}
+
 // FilterConfig stores a map of FilterAttributes for a resource.
 type FilterConfig map[string]FilterAttribute
 
@@ -167,8 +175,8 @@ func (f FilterConfig) ConstructFilterString(d *schema.ResourceData) (string, err
 // FilterResults filters the given results on the client-side filters present in the resource.
 func (f FilterConfig) FilterResults(
 	d *schema.ResourceData,
-	items []interface{}) ([]map[string]interface{}, error) {
-
+	items []interface{},
+) ([]map[string]interface{}, error) {
 	result := make([]map[string]interface{}, 0)
 
 	for _, item := range items {
@@ -327,7 +335,8 @@ func (f FilterConfig) GetLatestCreated(data []map[string]interface{}) map[string
 
 // FilterLatestVersion returns only the latest element in the given slice only if `latest` == true.
 func (f FilterConfig) FilterLatestVersion(d *schema.ResourceData,
-	items []map[string]interface{}) ([]map[string]interface{}, error) {
+	items []map[string]interface{},
+) ([]map[string]interface{}, error) {
 	if !d.Get("latest").(bool) {
 		return items, nil
 	}
@@ -396,8 +405,8 @@ func (f FilterConfig) GetLatestVersion(data []map[string]interface{}) (map[strin
 
 func (f FilterConfig) itemMatchesFilter(
 	d *schema.ResourceData,
-	item map[string]interface{}) (bool, error) {
-
+	item map[string]interface{},
+) (bool, error) {
 	filters := d.Get("filter").([]interface{})
 
 	for _, filter := range filters {
@@ -428,11 +437,22 @@ func (f FilterConfig) itemMatchesFilter(
 func (f FilterConfig) validateFilter(
 	matchBy, name string,
 	values []string,
-	itemValue interface{}) (bool, error) {
+	itemValue interface{},
+) (bool, error) {
+	// Handles slice types and recursive validation
+	recursiveValidate := func() (bool, error) {
+		var s []any
 
-	// Filter recursively on lists (tags, etc.)
-	if items, ok := itemValue.([]string); ok {
-		for _, item := range items {
+		switch itemValue.(type) {
+		case []int:
+			s = TypedSliceToAny(itemValue.([]int))
+		case []string:
+			s = TypedSliceToAny(itemValue.([]string))
+		default:
+			return false, fmt.Errorf("unknown slice type")
+		}
+
+		for _, item := range s {
 			valid, err := f.validateFilter(matchBy, name, values, item)
 			if err != nil {
 				return false, err
@@ -445,6 +465,20 @@ func (f FilterConfig) validateFilter(
 
 		return false, nil
 	}
+
+	// Ensure that the filter value has a valid type
+	if err := validateItemValueType(itemValue); err != nil {
+		return false, err
+	}
+
+	// Filter recursively on lists (tags, ids, etc.); calling a closure
+	// for code readability.
+	if reflect.TypeOf(itemValue).Kind() == reflect.Slice {
+		return recursiveValidate()
+	}
+
+	// Normalize item value types
+	itemValue = normalizeItemValue(itemValue)
 
 	cfg := f[name]
 
@@ -517,6 +551,39 @@ func validateFilterRegex(name string, values []interface{}, result interface{}) 
 	return false, nil
 }
 
+// normalizeItemValue converts similar item values (i.e. enum types) into their underlying types.
+func normalizeItemValue(value any) any {
+	kind := reflect.TypeOf(value).Kind()
+	rValue := reflect.ValueOf(value)
+
+	switch kind {
+	case reflect.String:
+		return rValue.String()
+	case reflect.Int:
+		return int(rValue.Int())
+	case reflect.Bool:
+		return rValue.Bool()
+	}
+
+	return value
+}
+
+// validateItemValueType ensures that all underlying filter values have a supported underlying type.
+func validateItemValueType(value any) error {
+	kind := reflect.TypeOf(value).Kind()
+
+	for _, v := range validFilterValueTypes {
+		if kind == v {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("The underlying type (%v) for this filterable field is not supported. "+
+		"This is always a provider bug. Please create an issue describing this bug on the terraform-provider-linode "+
+		"GitHub repository. (https://github.com/linode/terraform-provider-linode/issues)",
+		kind)
+}
+
 func FilterTypeString(value string) (interface{}, error) {
 	return value, nil
 }
@@ -527,4 +594,17 @@ func FilterTypeInt(value string) (interface{}, error) {
 
 func FilterTypeBool(value string) (interface{}, error) {
 	return strconv.ParseBool(value)
+}
+
+func FlattenToInterfaceSlice[T any](list []T) []interface{} {
+	result := make([]interface{}, len(list))
+	for i, v := range list {
+		result[i] = v
+	}
+
+	return result
+}
+
+func ListResultToInterface[T any](list []T, err error) ([]interface{}, error) {
+	return FlattenToInterfaceSlice(list), err
 }

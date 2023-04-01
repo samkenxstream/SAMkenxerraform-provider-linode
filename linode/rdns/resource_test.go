@@ -3,6 +3,7 @@ package rdns_test
 import (
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"testing"
 
@@ -15,11 +16,20 @@ import (
 	"github.com/linode/terraform-provider-linode/linode/rdns/tmpl"
 )
 
+var testRegion string
+
 func init() {
 	resource.AddTestSweepers("linode_rdns", &resource.Sweeper{
 		Name: "linode_rdns",
 		F:    sweep,
 	})
+
+	region, err := acceptance.GetRandomRegionWithCaps([]string{"linodes"})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	testRegion = region
 }
 
 func sweep(prefix string) error {
@@ -38,7 +48,6 @@ func sweep(prefix string) error {
 			continue
 		}
 		_, err := client.UpdateIPAddress(context.Background(), ip.Address, updateOpts)
-
 		if err != nil {
 			return fmt.Errorf("Error clearing RDNS %s during sweep: %s", ip.RDNS, err)
 		}
@@ -51,7 +60,7 @@ func TestAccResourceRDNS_basic(t *testing.T) {
 	t.Parallel()
 
 	resName := "linode_rdns.foobar"
-	var linodeLabel = acctest.RandomWithPrefix("tf_test")
+	linodeLabel := acctest.RandomWithPrefix("tf_test")
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { acceptance.PreCheck(t) },
@@ -59,7 +68,7 @@ func TestAccResourceRDNS_basic(t *testing.T) {
 		CheckDestroy: checkRDNSDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.Basic(t, linodeLabel, false),
+				Config: tmpl.Basic(t, linodeLabel, testRegion, false),
 				Check: resource.ComposeTestCheckFunc(
 					checkRDNSExists,
 					resource.TestMatchResourceAttr(resName, "rdns", regexp.MustCompile(`.nip.io$`)),
@@ -78,7 +87,7 @@ func TestAccResourceRDNS_basic(t *testing.T) {
 func TestAccResourceRDNS_update(t *testing.T) {
 	t.Parallel()
 
-	var label = acctest.RandomWithPrefix("tf_test")
+	label := acctest.RandomWithPrefix("tf_test")
 	resName := "linode_rdns.foobar"
 
 	resource.Test(t, resource.TestCase{
@@ -87,7 +96,7 @@ func TestAccResourceRDNS_update(t *testing.T) {
 		CheckDestroy: checkRDNSDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.Basic(t, label, false),
+				Config: tmpl.Basic(t, label, testRegion, false),
 				Check: resource.ComposeTestCheckFunc(
 					checkRDNSExists,
 					resource.TestCheckResourceAttrPair(resName, "address", "linode_instance.foobar", "ip_address"),
@@ -95,17 +104,17 @@ func TestAccResourceRDNS_update(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.Changed(t, label, false),
+				Config: tmpl.Changed(t, label, testRegion, false),
 				Check: resource.ComposeTestCheckFunc(
 					checkRDNSExists,
 					resource.TestMatchResourceAttr(resName, "rdns", regexp.MustCompile(`([0-9]{1,3}\-){3}[0-9]{1,3}.nip.io$`)),
 				),
 			},
 			{
-				Config: tmpl.Deleted(t, label),
+				Config: tmpl.Deleted(t, label, testRegion),
 			},
 			{
-				Config: tmpl.Deleted(t, label),
+				Config: tmpl.Deleted(t, label, testRegion),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestMatchResourceAttr("data.linode_networking_ip.foobar", "rdns", regexp.MustCompile(`.ip.linodeusercontent.com$`)),
 				),
@@ -118,7 +127,7 @@ func TestAccResourceRDNS_update(t *testing.T) {
 func TestAccResourceRDNS_waitForAvailable(t *testing.T) {
 	t.Parallel()
 
-	var label = acctest.RandomWithPrefix("tf_test")
+	label := acctest.RandomWithPrefix("tf_test")
 	resName := "linode_rdns.foobar"
 
 	resource.Test(t, resource.TestCase{
@@ -127,7 +136,7 @@ func TestAccResourceRDNS_waitForAvailable(t *testing.T) {
 		CheckDestroy: checkRDNSDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.Basic(t, label, true),
+				Config: tmpl.Basic(t, label, testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					checkRDNSExists,
 					resource.TestCheckResourceAttrPair(resName, "address", "linode_instance.foobar", "ip_address"),
@@ -135,17 +144,17 @@ func TestAccResourceRDNS_waitForAvailable(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.Changed(t, label, true),
+				Config: tmpl.Changed(t, label, testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					checkRDNSExists,
 					resource.TestMatchResourceAttr(resName, "rdns", regexp.MustCompile(`([0-9]{1,3}\-){3}[0-9]{1,3}.nip.io$`)),
 				),
 			},
 			{
-				Config: tmpl.Deleted(t, label),
+				Config: tmpl.Deleted(t, label, testRegion),
 			},
 			{
-				Config: tmpl.Deleted(t, label),
+				Config: tmpl.Deleted(t, label, testRegion),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestMatchResourceAttr("data.linode_networking_ip.foobar", "rdns", regexp.MustCompile(`.ip.linodeusercontent.com$`)),
 				),
@@ -163,7 +172,6 @@ func checkRDNSExists(s *terraform.State) error {
 		}
 
 		_, err := client.GetIPAddress(context.Background(), rs.Primary.Attributes["address"])
-
 		if err != nil {
 			return fmt.Errorf("Error retrieving state of RDNS %s: %s", rs.Primary.Attributes["rdns"], err)
 		}
@@ -181,7 +189,6 @@ func checkRDNSDestroy(s *terraform.State) error {
 
 		id := rs.Primary.ID
 		ip, err := client.GetIPAddress(context.Background(), id)
-
 		if err != nil {
 			if apiErr, ok := err.(*linodego.Error); ok && apiErr.Code == 404 {
 				return nil

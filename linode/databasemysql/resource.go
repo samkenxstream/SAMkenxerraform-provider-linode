@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	createDBTimeout = 60 * time.Minute
+	createDBTimeout = 75 * time.Minute
 	updateDBTimeout = 5 * time.Minute
 	deleteDBTimeout = 5 * time.Minute
 )
@@ -67,7 +67,7 @@ func readResource(ctx context.Context, d *schema.ResourceData, meta interface{})
 		return diag.Errorf("failed to get credentials for the specified mysql database: %s", err)
 	}
 
-	d.Set("engine_id", createEngineSlug(db.Engine, db.Version))
+	d.Set("engine_id", helper.CreateDatabaseEngineSlug(db.Engine, db.Version))
 	d.Set("engine", db.Engine)
 	d.Set("label", db.Label)
 	d.Set("region", db.Region)
@@ -86,12 +86,18 @@ func readResource(ctx context.Context, d *schema.ResourceData, meta interface{})
 	d.Set("updated", db.Updated.Format(time.RFC3339))
 	d.Set("root_username", creds.Username)
 	d.Set("version", db.Version)
+	d.Set("updates", []interface{}{helper.FlattenMaintenanceWindow(db.Updates)})
 
 	return nil
 }
 
 func createResource(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	client := meta.(*helper.ProviderMeta).Client
+
+	p, err := client.NewEventPollerWithoutEntity(linodego.EntityDatabase, linodego.ActionDatabaseCreate)
+	if err != nil {
+		return diag.Errorf("failed to initialize event poller: %s", err)
+	}
 
 	db, err := client.CreateMySQLDatabase(ctx, linodego.MySQLCreateOptions{
 		Label:           d.Get("label").(string),
@@ -110,10 +116,39 @@ func createResource(ctx context.Context, d *schema.ResourceData, meta interface{
 
 	d.SetId(strconv.Itoa(db.ID))
 
-	_, err = client.WaitForEventFinished(ctx, db.ID, linodego.EntityDatabase,
-		linodego.ActionDatabaseCreate, *db.Created, int(d.Timeout(schema.TimeoutCreate).Seconds()))
-	if err != nil {
-		return diag.Errorf("failed to wait for mysql database creation: %s", err)
+	// We need to inject the entity id after creation
+	p.EntityID = db.ID
+
+	if _, err := p.WaitForLatestUnknownEvent(ctx); err != nil {
+		return diag.Errorf("failed to wait for mysql database creation event: %s", err)
+	}
+
+	if err := client.WaitForDatabaseStatus(
+		ctx, db.ID, linodego.DatabaseEngineTypeMySQL,
+		linodego.DatabaseStatusActive, int(d.Timeout(schema.TimeoutCreate).Seconds())); err != nil {
+		return diag.Errorf("failed to wait for database active: %s", err)
+	}
+
+	updateList := d.Get("updates").([]interface{})
+
+	if !d.GetRawConfig().GetAttr("updates").IsNull() && len(updateList) > 0 {
+		updates, err := helper.ExpandMaintenanceWindow(updateList[0].(map[string]interface{}))
+		if err != nil {
+			return diag.Errorf("failed to read maintenance window config: %s", err)
+		}
+
+		updatedDB, err := client.UpdateMySQLDatabase(ctx, db.ID, linodego.MySQLUpdateOptions{
+			Updates: &updates,
+		})
+		if err != nil {
+			return diag.Errorf("failed to update mysql database maintenance window: %s", err)
+		}
+
+		err = helper.WaitForDatabaseUpdated(ctx, client, db.ID,
+			linodego.DatabaseEngineTypeMySQL, updatedDB.Created, int(d.Timeout(schema.TimeoutUpdate).Seconds()))
+		if err != nil {
+			return diag.FromErr(err)
+		}
 	}
 
 	return readResource(ctx, d, meta)
@@ -127,17 +162,54 @@ func updateResource(ctx context.Context, d *schema.ResourceData, meta interface{
 		return diag.Errorf("Error parsing Linode MySQL database ID %s as int: %s", d.Id(), err)
 	}
 
-	updateOpts := linodego.MySQLUpdateOptions{
-		Label: d.Get("label").(string),
+	updateOpts := linodego.MySQLUpdateOptions{}
+
+	shouldUpdate := false
+
+	if d.HasChange("label") {
+		updateOpts.Label = d.Get("label").(string)
+		shouldUpdate = true
 	}
 
 	if d.HasChange("allow_list") {
-		updateOpts.AllowList = helper.ExpandStringSet(d.Get("allow_list").(*schema.Set))
+		allowList := helper.ExpandStringSet(d.Get("allow_list").(*schema.Set))
+		updateOpts.AllowList = &allowList
+		shouldUpdate = true
 	}
 
-	_, err = client.UpdateMySQLDatabase(ctx, int(id), updateOpts)
-	if err != nil {
-		return diag.Errorf("failed to update mysql database: %s", err)
+	if d.HasChange("updates") {
+		var updates *linodego.MySQLDatabaseMaintenanceWindow
+
+		updatesRaw := d.Get("updates")
+		if updatesRaw != nil && len(updatesRaw.([]interface{})) > 0 {
+			expanded, err := helper.ExpandMaintenanceWindow(updatesRaw.([]interface{})[0].(map[string]interface{}))
+			if err != nil {
+				return diag.Errorf("failed to update maintenance window: %s", err)
+			}
+
+			updates = &expanded
+		}
+
+		updateOpts.Updates = updates
+		shouldUpdate = true
+	}
+
+	if shouldUpdate {
+		updatedDB, err := client.UpdateMySQLDatabase(ctx, int(id), updateOpts)
+		if err != nil {
+			return diag.Errorf("failed to update mysql database: %s", err)
+		}
+
+		createdTime := updatedDB.Created
+		if createdTime == nil {
+			return diag.Errorf("failed to get update timestamp for db %d", id)
+		}
+
+		err = helper.WaitForDatabaseUpdated(ctx, client, int(id),
+			linodego.DatabaseEngineTypeMySQL, updatedDB.Created, int(d.Timeout(schema.TimeoutUpdate).Seconds()))
+		if err != nil {
+			return diag.FromErr(err)
+		}
 	}
 
 	return readResource(ctx, d, meta)
@@ -163,8 +235,4 @@ func deleteResource(ctx context.Context, d *schema.ResourceData, meta interface{
 
 		return nil
 	}))
-}
-
-func createEngineSlug(engine, version string) string {
-	return fmt.Sprintf("%s/%s", engine, version)
 }

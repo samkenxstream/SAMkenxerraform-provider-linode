@@ -3,6 +3,7 @@ package backup_test
 import (
 	"context"
 	"fmt"
+	"log"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
@@ -11,6 +12,17 @@ import (
 	"github.com/linode/terraform-provider-linode/linode/acceptance"
 	"github.com/linode/terraform-provider-linode/linode/helper"
 )
+
+var testRegion string
+
+func init() {
+	region, err := acceptance.GetRandomRegionWithCaps(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	testRegion = region
+}
 
 func TestAccDataSourceInstanceBackups_basic(t *testing.T) {
 	t.Parallel()
@@ -28,7 +40,7 @@ func TestAccDataSourceInstanceBackups_basic(t *testing.T) {
 		Providers: acceptance.TestAccProviders,
 		Steps: []resource.TestStep{
 			{
-				Config: resourceInstanceBasic(instanceName),
+				Config: resourceInstanceBasic(instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists("linode_instance.foobar", &instance),
 				),
@@ -43,13 +55,14 @@ func TestAccDataSourceInstanceBackups_basic(t *testing.T) {
 
 					snapshot = newSnapshot
 				},
-				Config: dataSourceConfigBasic(instanceName),
+				Config: dataSourceConfigBasic(instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttrSet(resourceName, "in_progress.0.id"),
 					resource.TestCheckResourceAttr(resourceName, "in_progress.0.label", snapshotName),
 					resource.TestCheckResourceAttrSet(resourceName, "in_progress.0.status"),
 					resource.TestCheckResourceAttrSet(resourceName, "in_progress.0.type"),
 					resource.TestCheckResourceAttrSet(resourceName, "in_progress.0.created"),
+					resource.TestCheckResourceAttrSet(resourceName, "in_progress.0.available"),
 				),
 			},
 			{
@@ -59,11 +72,13 @@ func TestAccDataSourceInstanceBackups_basic(t *testing.T) {
 						t.Fatal(err)
 					}
 				},
-				Config: dataSourceConfigBasic(instanceName),
+				Config: dataSourceConfigBasic(instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttrSet(resourceName, "current.0.id"),
 					resource.TestCheckResourceAttr(resourceName, "current.0.label", snapshotName),
 					resource.TestCheckResourceAttr(resourceName, "current.0.status", "successful"),
+					resource.TestCheckResourceAttr(resourceName, "current.0.available", "true"),
+					resource.TestCheckResourceAttr("linode_instance.foobar", "backups.0.available", "true"),
 					resource.TestCheckResourceAttrSet(resourceName, "current.0.type"),
 					resource.TestCheckResourceAttrSet(resourceName, "current.0.created"),
 					resource.TestCheckResourceAttrSet(resourceName, "current.0.updated"),
@@ -74,21 +89,21 @@ func TestAccDataSourceInstanceBackups_basic(t *testing.T) {
 	})
 }
 
-func resourceInstanceBasic(label string) string {
+func resourceInstanceBasic(label, region string) string {
 	return fmt.Sprintf(`
 resource "linode_instance" "foobar" {
 	label = "%s"
 	type = "g6-nanode-1"
 	image = "linode/alpine3.15"
-	region = "us-east"
-	root_pass = "terraform-test"
+	region = "%s"
+	root_pass = "myr00tp@ssw0rd!!!"
 	swap_size = 256
 	backups_enabled = true
-}`, label)
+}`, label, region)
 }
 
-func dataSourceConfigBasic(instanceLabel string) string {
-	return resourceInstanceBasic(instanceLabel) + `
+func dataSourceConfigBasic(instanceLabel, region string) string {
+	return resourceInstanceBasic(instanceLabel, region) + `
 data "linode_instance_backups" "foobar" {
 	linode_id = linode_instance.foobar.id
 }`

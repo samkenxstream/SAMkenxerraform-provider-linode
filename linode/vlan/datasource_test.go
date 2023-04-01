@@ -1,18 +1,30 @@
 package vlan_test
 
 import (
+	"context"
+	"fmt"
+	"log"
+	"testing"
+	"time"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/linode/linodego"
 	"github.com/linode/terraform-provider-linode/linode/acceptance"
 	"github.com/linode/terraform-provider-linode/linode/helper"
 	"github.com/linode/terraform-provider-linode/linode/vlan/tmpl"
-
-	"context"
-	"fmt"
-	"testing"
-	"time"
 )
+
+var testRegion string
+
+func init() {
+	region, err := acceptance.GetRandomRegionWithCaps([]string{"vlans"})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	testRegion = region
+}
 
 func preConfigVLANPoll(t *testing.T, vlanName string) func() {
 	return func() {
@@ -35,14 +47,14 @@ func TestAccDataSourceVLANs_basic(t *testing.T) {
 		Providers: acceptance.TestAccProviders,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.DataBasic(t, instanceName, vlanName),
+				Config: tmpl.DataBasic(t, instanceName, testRegion, vlanName),
 			},
 			{
 				PreConfig: preConfigVLANPoll(t, vlanName),
-				Config:    tmpl.DataBasic(t, instanceName, vlanName),
+				Config:    tmpl.DataBasic(t, instanceName, testRegion, vlanName),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resourceName, "vlans.0.label", vlanName),
-					resource.TestCheckResourceAttr(resourceName, "vlans.0.region", "us-southeast"),
+					resource.TestCheckResourceAttr(resourceName, "vlans.0.region", testRegion),
 					resource.TestCheckResourceAttrSet(resourceName, "vlans.0.created"),
 					resource.TestCheckResourceAttrSet(resourceName, "vlans.0.linodes.#"),
 				),
@@ -63,15 +75,15 @@ func TestAccDataSourceVLANs_regex(t *testing.T) {
 		Providers: acceptance.TestAccProviders,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.DataRegex(t, instanceName, vlanName),
+				Config: tmpl.DataRegex(t, instanceName, testRegion, vlanName),
 			},
 			{
 				PreConfig: preConfigVLANPoll(t, vlanName),
-				Config:    tmpl.DataRegex(t, instanceName, vlanName),
+				Config:    tmpl.DataRegex(t, instanceName, testRegion, vlanName),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckResourceAttrGreaterThan(resourceName, "vlans.#", 0),
-					resource.TestCheckResourceAttr(resourceName, "vlans.0.label", vlanName+"-new"),
-					resource.TestCheckResourceAttr(resourceName, "vlans.0.region", "us-southeast"),
+					resource.TestCheckResourceAttr(resourceName, "vlans.0.label", vlanName),
+					resource.TestCheckResourceAttr(resourceName, "vlans.0.region", testRegion),
 					resource.TestCheckResourceAttrSet(resourceName, "vlans.0.created"),
 					resource.TestCheckResourceAttrSet(resourceName, "vlans.0.linodes.#"),
 				),
@@ -90,7 +102,7 @@ func TestAccDataSourceVLANs_ensureNoDuplicates(t *testing.T) {
 	t.Parallel()
 
 	instanceName := acctest.RandomWithPrefix("tf_test")
-	vlanName := acctest.RandomWithPrefix("tf-test")
+	vlanName := "tf-test"
 	resourceName := "data.linode_vlans.foolan"
 
 	createValidateSteps := func(i int) []resource.TestStep {
@@ -98,11 +110,11 @@ func TestAccDataSourceVLANs_ensureNoDuplicates(t *testing.T) {
 
 		return []resource.TestStep{
 			{
-				Config: tmpl.DataCheckDuplicate(t, instanceName, vlanName),
+				Config: tmpl.DataCheckDuplicate(t, instanceName, testRegion, vlanName),
 			},
 			{
 				PreConfig: preConfigVLANPoll(t, vlanName),
-				Config:    tmpl.DataCheckDuplicate(t, instanceName, vlanName),
+				Config:    tmpl.DataCheckDuplicate(t, instanceName, testRegion, vlanName),
 				Check: resource.ComposeTestCheckFunc(
 					// Ensure only one VLAN is created
 					resource.TestCheckResourceAttr(resourceName, "vlans.#", "1"),

@@ -1,12 +1,12 @@
 package domainrecord_test
 
 import (
+	"testing"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/linode/terraform-provider-linode/linode/acceptance"
 	"github.com/linode/terraform-provider-linode/linode/domainrecord/tmpl"
-
-	"testing"
 )
 
 func TestAccDataSourceDomainRecord_basic(t *testing.T) {
@@ -92,7 +92,7 @@ func TestAccDataSourceDomainRecord_caa(t *testing.T) {
 					resource.TestCheckResourceAttr(datasourceName, "name", "caa_test"),
 					resource.TestCheckResourceAttr(datasourceName, "type", "CAA"),
 					resource.TestCheckResourceAttr(datasourceName, "tag", "issue"),
-					resource.TestCheckResourceAttr(datasourceName, "target", "test"),
+					resource.TestCheckResourceAttr(datasourceName, "target", "example.com"),
 					resource.TestCheckResourceAttrSet(datasourceName, "id"),
 					resource.TestCheckResourceAttrSet(datasourceName, "domain_id"),
 					resource.TestCheckResourceAttrSet(datasourceName, "type"),

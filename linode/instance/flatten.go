@@ -8,7 +8,8 @@ import (
 )
 
 func flattenInstance(
-	ctx context.Context, client *linodego.Client, instance *linodego.Instance) (map[string]interface{}, error) {
+	ctx context.Context, client *linodego.Client, instance *linodego.Instance,
+) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
 	id := instance.ID
@@ -45,6 +46,7 @@ func flattenInstance(
 	result["group"] = instance.Group
 	result["tags"] = instance.Tags
 	result["image"] = instance.Image
+	result["host_uuid"] = instance.HostUUID
 
 	result["backups"] = flattenInstanceBackups(*instance)
 	result["specs"] = flattenInstanceSpecs(*instance)
@@ -91,7 +93,8 @@ func flattenInstanceAlerts(instance linodego.Instance) []map[string]int {
 
 func flattenInstanceBackups(instance linodego.Instance) []map[string]interface{} {
 	return []map[string]interface{}{{
-		"enabled": instance.Backups.Enabled,
+		"available": instance.Backups.Available,
+		"enabled":   instance.Backups.Enabled,
 		"schedule": []map[string]interface{}{{
 			"day":    instance.Backups.Schedule.Day,
 			"window": instance.Backups.Schedule.Window,
@@ -116,7 +119,8 @@ func flattenInstanceDisks(instanceDisks []linodego.InstanceDisk) (disks []map[st
 }
 
 func flattenInstanceConfigDevice(
-	dev *linodego.InstanceConfigDevice, diskLabelIDMap map[int]string) []map[string]interface{} {
+	dev *linodego.InstanceConfigDevice, diskLabelIDMap map[int]string,
+) []map[string]interface{} {
 	if dev == nil || emptyInstanceConfigDevice(*dev) {
 		return nil
 	}
@@ -136,7 +140,8 @@ func flattenInstanceConfigDevice(
 }
 
 func flattenInstanceConfigs(
-	instanceConfigs []linodego.InstanceConfig, diskLabelIDMap map[int]string) (configs []map[string]interface{}) {
+	instanceConfigs []linodego.InstanceConfig, diskLabelIDMap map[int]string,
+) (configs []map[string]interface{}) {
 	for _, config := range instanceConfigs {
 
 		devices := []map[string]interface{}{{
@@ -218,6 +223,7 @@ func flattenInstanceSimple(instance *linodego.Instance) (map[string]interface{},
 	result["group"] = instance.Group
 	result["tags"] = instance.Tags
 	result["image"] = instance.Image
+	result["host_uuid"] = instance.HostUUID
 	result["backups"] = flattenInstanceBackups(*instance)
 	result["specs"] = flattenInstanceSpecs(*instance)
 	result["alerts"] = flattenInstanceAlerts(*instance)

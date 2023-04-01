@@ -1,14 +1,15 @@
 package tmpl
 
 import (
-	"github.com/linode/terraform-provider-linode/linode/acceptance"
-
 	"testing"
+
+	"github.com/linode/terraform-provider-linode/linode/acceptance"
 )
 
 type TemplateData struct {
 	Engine          string
 	Label           string
+	Region          string
 	AllowedIP       string
 	ReplicationType string
 	ClusterSize     int
@@ -16,17 +17,23 @@ type TemplateData struct {
 	SSLConnection   bool
 }
 
-func Basic(t *testing.T, label, engine string) string {
+func Basic(t *testing.T, label, engine, region string) string {
 	return acceptance.ExecuteTemplate(t,
 		"database_mysql_basic", TemplateData{
 			Engine: engine,
 			Label:  label,
+			Region: region,
 		})
 }
 
 func Complex(t *testing.T, data TemplateData) string {
 	return acceptance.ExecuteTemplate(t,
 		"database_mysql_complex", data)
+}
+
+func ComplexUpdates(t *testing.T, data TemplateData) string {
+	return acceptance.ExecuteTemplate(t,
+		"database_mysql_complex_updates", data)
 }
 
 func DataBasic(t *testing.T, data TemplateData) string {

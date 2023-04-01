@@ -5,8 +5,8 @@ resource "linode_instance" "foobar" {
     group = "tf_test"
     type = "g6-nanode-1"
     image = "{{.Image}}"
-    region = "us-east"
-    root_pass = "terraform-test"
+    region = "{{ .Region }}"
+    root_pass = "myr00tp@ssw0rd!!!"
     swap_size = 256
     authorized_keys = ["{{.PubKey}}"]
 }

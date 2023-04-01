@@ -37,7 +37,7 @@ func readDataSource(ctx context.Context, d *schema.ResourceData, meta interface{
 		return diag.Errorf("failed to get credentials for mysql database: %s", err)
 	}
 
-	d.Set("engine_id", createEngineSlug(db.Engine, db.Version))
+	d.Set("engine_id", helper.CreateDatabaseEngineSlug(db.Engine, db.Version))
 	d.Set("engine", db.Engine)
 	d.Set("label", db.Label)
 	d.Set("region", db.Region)
@@ -54,6 +54,7 @@ func readDataSource(ctx context.Context, d *schema.ResourceData, meta interface{
 	d.Set("root_password", creds.Password)
 	d.Set("status", db.Status)
 	d.Set("updated", db.Updated.Format(time.RFC3339))
+	d.Set("updates", []interface{}{helper.FlattenMaintenanceWindow(db.Updates)})
 	d.Set("root_username", creds.Username)
 	d.Set("version", db.Version)
 

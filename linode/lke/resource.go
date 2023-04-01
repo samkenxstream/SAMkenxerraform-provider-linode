@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -14,7 +15,7 @@ import (
 )
 
 const (
-	createLKETimeout = 15 * time.Minute
+	createLKETimeout = 25 * time.Minute
 	updateLKETimeout = 30 * time.Minute
 	deleteLKETimeout = 10 * time.Minute
 )
@@ -148,8 +149,14 @@ func updateResource(ctx context.Context, d *schema.ResourceData, meta interface{
 	}
 
 	updateOpts := linodego.LKEClusterUpdateOptions{}
-	updateOpts.Label = d.Get("label").(string)
-	updateOpts.K8sVersion = d.Get("k8s_version").(string)
+
+	if d.HasChange("label") {
+		updateOpts.Label = d.Get("label").(string)
+	}
+
+	if d.HasChange("k8s_version") {
+		updateOpts.K8sVersion = d.Get("k8s_version").(string)
+	}
 
 	controlPlane := d.Get("control_plane").([]interface{})
 	if len(controlPlane) > 0 {
@@ -185,16 +192,23 @@ func updateResource(ctx context.Context, d *schema.ResourceData, meta interface{
 	poolSpecs := expandLinodeLKENodePoolSpecs(d.Get("pool").([]interface{}))
 	updates := ReconcileLKENodePoolSpecs(poolSpecs, pools)
 
+	updatedIds := []int{}
+
 	for poolID, updateOpts := range updates.ToUpdate {
 		if _, err := client.UpdateLKENodePool(ctx, id, poolID, updateOpts); err != nil {
 			return diag.Errorf("failed to update LKE Cluster %d Pool %d: %s", id, poolID, err)
 		}
+
+		updatedIds = append(updatedIds, poolID)
 	}
 
 	for _, createOpts := range updates.ToCreate {
-		if _, err := client.CreateLKENodePool(ctx, id, createOpts); err != nil {
+		pool, err := client.CreateLKENodePool(ctx, id, createOpts)
+		if err != nil {
 			return diag.Errorf("failed to create LKE Cluster %d Pool: %s", id, err)
 		}
+
+		updatedIds = append(updatedIds, pool.ID)
 	}
 
 	for _, poolID := range updates.ToDelete {
@@ -202,6 +216,16 @@ func updateResource(ctx context.Context, d *schema.ResourceData, meta interface{
 			return diag.Errorf("failed to delete LKE Cluster %d Pool %d: %s", id, poolID, err)
 		}
 	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(updatedIds))
+
+	for _, poolID := range updatedIds {
+		go waitForNodePoolReady(ctx, &client, make(chan<- error),
+			&wg, providerMeta.Config.LKENodeReadyPollMilliseconds, id, poolID)
+	}
+
+	wg.Wait()
 
 	return nil
 }

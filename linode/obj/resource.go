@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -107,7 +108,8 @@ func deleteResource(ctx context.Context, d *schema.ResourceData, meta interface{
 }
 
 func diffResource(
-	ctx context.Context, d *schema.ResourceDiff, meta interface{}) error {
+	ctx context.Context, d *schema.ResourceDiff, meta interface{},
+) error {
 	if d.HasChange("etag") {
 		d.SetNewComputed("version_id")
 	}
@@ -240,7 +242,7 @@ func objectBodyFromResourceData(d *schema.ResourceData) (body aws.ReaderSeekerCl
 	if source, ok := d.GetOk("source"); ok {
 		sourceFilePath := source.(string)
 
-		file, err := os.Open(sourceFilePath)
+		file, err := os.Open(filepath.Clean(sourceFilePath))
 		if err != nil {
 			return aws.ReaderSeekerCloser{}, err
 		}

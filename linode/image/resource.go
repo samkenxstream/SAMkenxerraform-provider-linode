@@ -3,7 +3,7 @@ package image
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
+	"crypto/md5" // #nosec G501 -- endpoint expecting md5
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -83,7 +83,8 @@ func createResource(ctx context.Context, d *schema.ResourceData, meta interface{
 }
 
 func createResourceFromLinode(
-	ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	ctx context.Context, d *schema.ResourceData, meta interface{},
+) diag.Diagnostics {
 	client := meta.(*helper.ProviderMeta).Client
 
 	linodeID := d.Get("linode_id").(int)
@@ -120,7 +121,8 @@ func createResourceFromLinode(
 }
 
 func createResourceFromUpload(
-	ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	ctx context.Context, d *schema.ResourceData, meta interface{},
+) diag.Diagnostics {
 	client := meta.(*helper.ProviderMeta).Client
 
 	region := d.Get("region").(string)
@@ -129,9 +131,14 @@ func createResourceFromUpload(
 
 	imageReader, err := imageFromResourceData(d)
 	if err != nil {
-		diag.Errorf("failed to get image source: %v", err)
+		return diag.Errorf("failed to get image source: %v", err)
 	}
-	defer imageReader.Close()
+
+	defer func() {
+		if err := imageReader.Close(); err != nil {
+			log.Printf("[WARN] Failed to close image reader: %s\n", err)
+		}
+	}()
 
 	createOpts := linodego.ImageCreateUploadOptions{
 		Region:      region,
@@ -217,7 +224,8 @@ func imageFromResourceData(d *schema.ResourceData) (image io.ReadCloser, err err
 
 func uploadImageAndStoreHash(
 	ctx context.Context, d *schema.ResourceData, meta interface{},
-	uploadURL string, image io.Reader) error {
+	uploadURL string, image io.Reader,
+) error {
 	client := meta.(*helper.ProviderMeta).Client
 
 	var buf bytes.Buffer
@@ -227,7 +235,7 @@ func uploadImageAndStoreHash(
 		return err
 	}
 
-	hash := md5.New()
+	hash := md5.New() // #nosec G401 -- endpoint expecting md5
 
 	if _, err := io.Copy(hash, &buf); err != nil {
 		return err

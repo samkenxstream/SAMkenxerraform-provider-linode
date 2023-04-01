@@ -12,7 +12,7 @@ import (
 func TestAccDataSourceVolume_basic(t *testing.T) {
 	t.Parallel()
 
-	var volumeName = acctest.RandomWithPrefix("tf_test")
+	volumeName := acctest.RandomWithPrefix("tf_test")
 	resourceName := "data.linode_volume.foobar"
 
 	resource.Test(t, resource.TestCase{
@@ -20,9 +20,9 @@ func TestAccDataSourceVolume_basic(t *testing.T) {
 		Providers: acceptance.TestAccProviders,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.DataBasic(t, volumeName),
+				Config: tmpl.DataBasic(t, volumeName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttr(resourceName, "region", "us-west"),
+					resource.TestCheckResourceAttr(resourceName, "region", testRegion),
 					resource.TestCheckResourceAttr(resourceName, "size", "20"),
 					resource.TestCheckResourceAttr(resourceName, "label", volumeName),
 					resource.TestCheckResourceAttr(resourceName, "tags.0", "tf_test"),

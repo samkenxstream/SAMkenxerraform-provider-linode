@@ -47,7 +47,8 @@ func Resource() *schema.Resource {
 }
 
 func readResource(
-	ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	ctx context.Context, d *schema.ResourceData, meta interface{},
+) diag.Diagnostics {
 	client := meta.(*helper.ProviderMeta).Client
 
 	cluster, label, err := DecodeBucketID(d.Id())
@@ -96,6 +97,7 @@ func readResource(
 	d.SetId(fmt.Sprintf("%s:%s", bucket.Cluster, bucket.Label))
 	d.Set("cluster", bucket.Cluster)
 	d.Set("label", bucket.Label)
+	d.Set("hostname", bucket.Hostname)
 	d.Set("acl", access.ACL)
 	d.Set("cors_enabled", access.CorsEnabled)
 
@@ -103,7 +105,8 @@ func readResource(
 }
 
 func createResource(
-	ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	ctx context.Context, d *schema.ResourceData, meta interface{},
+) diag.Diagnostics {
 	client := meta.(*helper.ProviderMeta).Client
 
 	cluster := d.Get("cluster").(string)
@@ -129,7 +132,8 @@ func createResource(
 }
 
 func updateResource(
-	ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	ctx context.Context, d *schema.ResourceData, meta interface{},
+) diag.Diagnostics {
 	client := meta.(*helper.ProviderMeta).Client
 
 	accessKey := d.Get("access_key")
@@ -175,7 +179,8 @@ func updateResource(
 }
 
 func deleteResource(
-	ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	ctx context.Context, d *schema.ResourceData, meta interface{},
+) diag.Diagnostics {
 	client := meta.(*helper.ProviderMeta).Client
 	cluster, label, err := DecodeBucketID(d.Id())
 	if err != nil {
@@ -209,7 +214,6 @@ func readBucketLifecycle(d *schema.ResourceData, conn *s3.S3) error {
 
 	lifecycleConfigOutput, err := conn.GetBucketLifecycleConfiguration(
 		&s3.GetBucketLifecycleConfigurationInput{Bucket: &label})
-
 	// A "NoSuchLifecycleConfiguration" error should be ignored in this context
 	if err != nil {
 		if err, ok := err.(awserr.Error); !ok || (ok && err.Code() != "NoSuchLifecycleConfiguration") {
@@ -273,7 +277,8 @@ func updateBucketLifecycle(d *schema.ResourceData, conn *s3.S3) error {
 }
 
 func updateBucketAccess(
-	ctx context.Context, d *schema.ResourceData, client linodego.Client) error {
+	ctx context.Context, d *schema.ResourceData, client linodego.Client,
+) error {
 	cluster := d.Get("cluster").(string)
 	label := d.Get("label").(string)
 
@@ -295,7 +300,8 @@ func updateBucketAccess(
 }
 
 func updateBucketCert(
-	ctx context.Context, d *schema.ResourceData, client linodego.Client) error {
+	ctx context.Context, d *schema.ResourceData, client linodego.Client,
+) error {
 	cluster := d.Get("cluster").(string)
 	label := d.Get("label").(string)
 	oldCert, newCert := d.GetChange("cert")

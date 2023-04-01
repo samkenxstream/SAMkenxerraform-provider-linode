@@ -13,12 +13,12 @@ jobs:
       github.event_name == 'repository_dispatch' &&
       github.event.client_payload.slash_command.sha != '' &&
       github.event.client_payload.slash_command.pkg != '' &&
-      contains(github.event.client_payload.pull_request.head.sha, github.event.client_payload.slash_command.sha)
+      github.event.client_payload.pull_request.head.sha == github.event.client_payload.slash_command.sha
 
     steps:
       - uses: actions/setup-go@37335c7bb261b353407cff977110895fa0b4f7d8 # pin@v2
         with:
-          go-version: '1.17'
+          go-version: '1.18'
       - run: go version
       - uses: actions-ecosystem/action-regex-match@v2
         id: validate-pkg
@@ -31,7 +31,7 @@ jobs:
       - name: Checkout PR
         uses: actions/checkout@v2
         with:
-          ref: 'refs/pull/${{ github.event.client_payload.pull_request.number }}/merge'
+          ref: ${{ github.event.client_payload.slash_command.sha }}
 
       - run: make PKG_NAME="${{ github.event.client_payload.slash_command.pkg }}" testacc
         if: ${{ steps.validate-pkg.outputs.match == '' }}

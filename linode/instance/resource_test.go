@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"sync"
@@ -19,11 +20,20 @@ import (
 	"github.com/linode/terraform-provider-linode/linode/instance/tmpl"
 )
 
+var testRegion string
+
 func init() {
 	resource.AddTestSweepers("linode_instance", &resource.Sweeper{
 		Name: "linode_instance",
 		F:    sweep,
 	})
+
+	region, err := acceptance.GetRandomRegionWithCaps([]string{"Vlans"})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	testRegion = region
 }
 
 func sweep(prefix string) error {
@@ -42,7 +52,6 @@ func sweep(prefix string) error {
 			continue
 		}
 		err := client.DeleteInstance(context.Background(), instance.ID)
-
 		if err != nil {
 			return fmt.Errorf("Error destroying %s during sweep: %s", instance.Label, err)
 		}
@@ -64,15 +73,16 @@ func TestAccResourceInstance_basic(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.Basic(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.Basic(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
 					resource.TestCheckResourceAttr(resName, "image", acceptance.TestImageLatest),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "256"),
+					resource.TestCheckResourceAttrSet(resName, "host_uuid"),
 				),
 			},
 
@@ -97,14 +107,14 @@ func TestAccResourceInstance_watchdogDisabled(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.WatchdogDisabled(t, instanceName),
+				Config: tmpl.WatchdogDisabled(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "watchdog_enabled", "false"),
 				),
 			},
 			{
-				Config:   tmpl.WatchdogDisabled(t, instanceName),
+				Config:   tmpl.WatchdogDisabled(t, instanceName, testRegion),
 				PlanOnly: true,
 			},
 		},
@@ -124,13 +134,13 @@ func TestAccResourceInstance_authorizedUsers(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.AuthorizedUsers(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.AuthorizedUsers(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
 					resource.TestCheckResourceAttr(resName, "image", acceptance.TestImageLatest),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "256"),
 				),
@@ -141,6 +151,30 @@ func TestAccResourceInstance_authorizedUsers(t *testing.T) {
 				ImportState:             true,
 				ImportStateVerify:       true,
 				ImportStateVerifyIgnore: []string{"root_pass", "authorized_users", "image", "resize_disk"},
+			},
+		},
+	})
+}
+
+func TestAccResourceInstance_validateAuthorizedKeys(t *testing.T) {
+	t.Parallel()
+
+	instanceName := acctest.RandomWithPrefix("tf_test")
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { acceptance.PreCheck(t) },
+		Providers:    acceptance.TestAccProviders,
+		CheckDestroy: acceptance.CheckInstanceDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: tmpl.AuthorizedKeysEmpty(t, instanceName, testRegion),
+				ExpectError: regexp.MustCompile(
+					"invalid input for authorized_keys"),
+			},
+			{
+				Config: tmpl.DiskAuthorizedKeysEmpty(t, instanceName, testRegion),
+				ExpectError: regexp.MustCompile(
+					"invalid input for disk authorized_keys"),
 			},
 		},
 	})
@@ -159,12 +193,12 @@ func TestAccResourceInstance_interfaces(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.Interfaces(t, instanceName),
+				Config: tmpl.Interfaces(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-southeast"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "image", acceptance.TestImageLatest),
 
@@ -175,7 +209,7 @@ func TestAccResourceInstance_interfaces(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.InterfacesUpdate(t, instanceName),
+				Config: tmpl.InterfacesUpdate(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resName, "config.0.interface.#", "2"),
 
@@ -186,7 +220,7 @@ func TestAccResourceInstance_interfaces(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.InterfacesUpdateEmpty(t, instanceName),
+				Config: tmpl.InterfacesUpdateEmpty(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resName, "config.0.interface.#", "0"),
 				),
@@ -214,12 +248,12 @@ func TestAccResourceInstance_config(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.WithConfig(t, instanceName),
+				Config: tmpl.WithConfig(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					// resource.TestCheckResourceAttr(resName, "kernel", "linode/latest-64bit"),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "0"),
@@ -256,12 +290,12 @@ func TestAccResourceInstance_configPair(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.MultipleConfigs(t, instanceName),
+				Config: tmpl.MultipleConfigs(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					// resource.TestCheckResourceAttr(resName, "kernel", "linode/latest-64bit"),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "0"),
@@ -293,12 +327,12 @@ func TestAccResourceInstance_configInterfaces(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.ConfigInterfaces(t, instanceName),
+				Config: tmpl.ConfigInterfaces(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-southeast"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 
 					resource.TestCheckResourceAttr(resName, "config.#", "1"),
@@ -310,7 +344,7 @@ func TestAccResourceInstance_configInterfaces(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.ConfigInterfacesMultiple(t, instanceName),
+				Config: tmpl.ConfigInterfacesMultiple(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resName, "config.#", "2"),
 					resource.TestCheckResourceAttr(resName, "config.0.interface.#", "1"),
@@ -323,7 +357,7 @@ func TestAccResourceInstance_configInterfaces(t *testing.T) {
 			},
 			{
 				PreConfig: testAccAssertReboot(t, false, &instance),
-				Config:    tmpl.ConfigInterfacesUpdate(t, instanceName),
+				Config:    tmpl.ConfigInterfacesUpdate(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resName, "config.#", "2"),
 					resource.TestCheckResourceAttr(resName, "config.0.interface.#", "2"),
@@ -333,7 +367,7 @@ func TestAccResourceInstance_configInterfaces(t *testing.T) {
 			},
 			{
 				PreConfig: testAccAssertReboot(t, true, &instance),
-				Config:    tmpl.ConfigInterfacesUpdateEmpty(t, instanceName),
+				Config:    tmpl.ConfigInterfacesUpdateEmpty(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resName, "config.0.interface.#", "0"),
 				),
@@ -355,7 +389,6 @@ func testAccAssertReboot(t *testing.T, shouldRestart bool, instance *linodego.In
 			instance.ID, instance.Created.Format("2006-01-02T15:04:05"))
 
 		events, err := client.ListEvents(context.Background(), &linodego.ListOptions{Filter: eventFilter})
-
 		if err != nil {
 			t.Fail()
 		}
@@ -384,12 +417,12 @@ func TestAccResourceInstance_disk(t *testing.T) {
 
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.RawDisk(t, instanceName),
+				Config: tmpl.RawDisk(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "0"),
 					resource.TestCheckResourceAttr(resName, "status", "offline"),
@@ -425,12 +458,12 @@ func TestAccResourceInstance_diskImage(t *testing.T) {
 
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.Disk(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.Disk(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					// resource.TestCheckResourceAttr(resName, "kernel", "linode/latest-64bit"),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "0"),
@@ -463,12 +496,12 @@ func TestAccResourceInstance_diskPair(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.DiskMultiple(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskMultiple(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					// resource.TestCheckResourceAttr(resName, "kernel", "linode/latest-64bit"),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "512"),
@@ -502,12 +535,12 @@ func TestAccResourceInstance_diskAndConfig(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					// resource.TestCheckResourceAttr(resName, "kernel", "linode/latest-64bit"),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "0"),
@@ -546,12 +579,12 @@ func TestAccResourceInstance_disksAndConfigs(t *testing.T) {
 		),
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.DiskConfigMultiple(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfigMultiple(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					// resource.TestCheckResourceAttr(resName, "kernel", "linode/latest-64bit"),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "512"),
@@ -593,13 +626,13 @@ func TestAccResourceInstance_volumeAndConfig(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.VolumeConfig(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.VolumeConfig(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					acceptance.CheckVolumeExists(volName, &volume),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					// resource.TestCheckResourceAttr(resName, "kernel", "linode/latest-64bit"),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "boot_config_label", "config"),
@@ -635,12 +668,12 @@ func TestAccResourceInstance_privateImage(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.PrivateImage(t, instanceName),
+				Config: tmpl.PrivateImage(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					checkInstanceDisks(&instance,
 						testDisk("boot", testDiskSize(1000)),
@@ -673,12 +706,12 @@ func TestAccResourceInstance_noImage(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.NoImage(t, instanceName),
+				Config: tmpl.NoImage(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 				),
 			},
@@ -705,7 +738,7 @@ func TestAccResourceInstance_updateSimple(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.Basic(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.Basic(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -713,7 +746,7 @@ func TestAccResourceInstance_updateSimple(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.Updates(t, instanceName),
+				Config: tmpl.Updates(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", fmt.Sprintf("%s_r", instanceName)),
@@ -730,38 +763,41 @@ func TestAccResourceInstance_configUpdate(t *testing.T) {
 	instanceName := acctest.RandomWithPrefix("tf_test")
 	resName := "linode_instance.foobar"
 
-	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { acceptance.PreCheck(t) },
-		Providers:    acceptance.TestAccProviders,
-		CheckDestroy: acceptance.CheckInstanceDestroy,
-		Steps: []resource.TestStep{
-			{
-				Config: tmpl.WithConfig(t, instanceName),
-				Check: resource.ComposeTestCheckFunc(
-					acceptance.CheckInstanceExists(resName, &instance),
-					resource.TestCheckResourceAttr(resName, "label", instanceName),
-					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
-					resource.TestCheckResourceAttr(resName, "config.0.kernel", "linode/latest-64bit"),
-					resource.TestCheckResourceAttr(resName, "config.0.root_device", "/dev/sda"),
-					resource.TestCheckResourceAttr(resName, "config.0.helpers.0.network", "true"),
-					resource.TestCheckResourceAttr(resName, "alerts.0.cpu", "60"),
-				),
+	// This test can occasionally fail while running the entire test suite in parallel
+	acceptance.RunTestRetry(t, 3, func(retryT *acceptance.TRetry) {
+		resource.Test(retryT, resource.TestCase{
+			PreCheck:     func() { acceptance.PreCheck(t) },
+			Providers:    acceptance.TestAccProviders,
+			CheckDestroy: acceptance.CheckInstanceDestroy,
+			Steps: []resource.TestStep{
+				{
+					Config: tmpl.WithConfig(t, instanceName, testRegion),
+					Check: resource.ComposeTestCheckFunc(
+						acceptance.CheckInstanceExists(resName, &instance),
+						resource.TestCheckResourceAttr(resName, "label", instanceName),
+						resource.TestCheckResourceAttr(resName, "group", "tf_test"),
+						resource.TestCheckResourceAttr(resName, "config.0.kernel", "linode/latest-64bit"),
+						resource.TestCheckResourceAttr(resName, "config.0.root_device", "/dev/sda"),
+						resource.TestCheckResourceAttr(resName, "config.0.helpers.0.network", "true"),
+						resource.TestCheckResourceAttr(resName, "alerts.0.cpu", "60"),
+					),
+				},
+				{
+					Config: tmpl.ConfigUpdates(t, instanceName, testRegion),
+					Check: resource.ComposeTestCheckFunc(
+						acceptance.CheckInstanceExists(resName, &instance),
+						resource.TestCheckResourceAttr(resName, "label", fmt.Sprintf("%s_r", instanceName)),
+						resource.TestCheckResourceAttr(resName, "group", "tf_test_r"),
+						// changed kernel, not label
+						resource.TestCheckResourceAttr(resName, "config.0.label", "config"),
+						resource.TestCheckResourceAttr(resName, "config.0.kernel", "linode/latest-32bit"),
+						resource.TestCheckResourceAttr(resName, "config.0.root_device", "/dev/sda"),
+						resource.TestCheckResourceAttr(resName, "config.0.helpers.0.network", "false"),
+						resource.TestCheckResourceAttr(resName, "alerts.0.cpu", "80"),
+					),
+				},
 			},
-			{
-				Config: tmpl.ConfigUpdates(t, instanceName),
-				Check: resource.ComposeTestCheckFunc(
-					acceptance.CheckInstanceExists(resName, &instance),
-					resource.TestCheckResourceAttr(resName, "label", fmt.Sprintf("%s_r", instanceName)),
-					resource.TestCheckResourceAttr(resName, "group", "tf_test_r"),
-					// changed kerel, not label
-					resource.TestCheckResourceAttr(resName, "config.0.label", "config"),
-					resource.TestCheckResourceAttr(resName, "config.0.kernel", "linode/latest-32bit"),
-					resource.TestCheckResourceAttr(resName, "config.0.root_device", "/dev/sda"),
-					resource.TestCheckResourceAttr(resName, "config.0.helpers.0.network", "false"),
-					resource.TestCheckResourceAttr(resName, "alerts.0.cpu", "80"),
-				),
-			},
-		},
+		})
 	})
 }
 
@@ -782,7 +818,7 @@ func TestAccResourceInstance_configPairUpdate(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.WithConfig(t, instanceName),
+				Config: tmpl.WithConfig(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -796,12 +832,12 @@ func TestAccResourceInstance_configPairUpdate(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.MultipleConfigs(t, instanceName),
+				Config: tmpl.MultipleConfigs(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					// resource.TestCheckResourceAttr(resName, "kernel", "linode/latest-64bit"),
 					resource.TestCheckResourceAttr(resName, "config.#", "2"),
 					resource.TestCheckResourceAttr(resName, "config.0.label", "configa"),
@@ -823,7 +859,7 @@ func TestAccResourceInstance_configPairUpdate(t *testing.T) {
 				ImportStateVerifyIgnore: []string{"boot_config_label", "status", "resize_disk"},
 			},
 			{
-				Config: tmpl.WithConfig(t, instanceName),
+				Config: tmpl.WithConfig(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -843,12 +879,12 @@ func TestAccResourceInstance_configPairUpdate(t *testing.T) {
 				ImportStateVerifyIgnore: []string{"boot_config_label", "status", "resize_disk"},
 			},
 			{
-				Config: tmpl.ConfigsAllUpdated(t, instanceName),
+				Config: tmpl.ConfigsAllUpdated(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					// resource.TestCheckResourceAttr(resName, "kernel", "linode/latest-64bit"),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 					resource.TestCheckResourceAttr(resName, "swap_size", "0"),
@@ -875,7 +911,7 @@ func TestAccResourceInstance_upsizeWithoutDisk(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.WithType(t, instanceName, acceptance.PublicKeyMaterial, "g6-nanode-1"),
+				Config: tmpl.WithType(t, instanceName, acceptance.PublicKeyMaterial, "g6-nanode-1", testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -886,7 +922,7 @@ func TestAccResourceInstance_upsizeWithoutDisk(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.WithType(t, instanceName, acceptance.PublicKeyMaterial, "g6-standard-1"),
+				Config: tmpl.WithType(t, instanceName, acceptance.PublicKeyMaterial, "g6-standard-1", testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "51200"),
@@ -913,7 +949,7 @@ func TestAccResourceInstance_diskRawResize(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Start off with a Linode 1024
 			{
-				Config: tmpl.RawDisk(t, instanceName),
+				Config: tmpl.RawDisk(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -928,7 +964,7 @@ func TestAccResourceInstance_diskRawResize(t *testing.T) {
 			},
 			// Bump it to a 2048, and expand the disk
 			{
-				Config: tmpl.RawDiskExpanded(t, instanceName),
+				Config: tmpl.RawDiskExpanded(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "51200"),
@@ -958,7 +994,7 @@ func TestAccResourceInstance_tag(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Start off with a single tag
 			{
-				Config: tmpl.Tag(t, instanceName),
+				Config: tmpl.Tag(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "tags.#", "1"),
@@ -967,7 +1003,7 @@ func TestAccResourceInstance_tag(t *testing.T) {
 			},
 			// Apply updated tags
 			{
-				Config: tmpl.TagUpdate(t, instanceName),
+				Config: tmpl.TagUpdate(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "tags.#", "2"),
@@ -995,7 +1031,7 @@ func TestAccResourceInstance_tagWithVolume(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.TagVolume(t, label, "tf_test"),
+				Config: tmpl.TagVolume(t, label, "tf_test", testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(instanceResName, &instance),
 					resource.TestCheckResourceAttr(instanceResName, "tags.#", "1"),
@@ -1003,7 +1039,7 @@ func TestAccResourceInstance_tagWithVolume(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.TagVolume(t, label, "tf_test_updated"),
+				Config: tmpl.TagVolume(t, label, "tf_test_updated", testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					// Ensure the volume is not detached
 					acceptance.CheckEventAbsent(volumeResName, "volume", linodego.ActionVolumeDetach),
@@ -1018,6 +1054,9 @@ func TestAccResourceInstance_tagWithVolume(t *testing.T) {
 }
 
 func TestAccResourceInstance_diskRawDeleted(t *testing.T) {
+	t.Skip("This test is currently disabled as null disk " +
+		"configurations are now computed by default.")
+
 	t.Parallel()
 	var instance linodego.Instance
 	instanceName := acctest.RandomWithPrefix("tf_test")
@@ -1030,7 +1069,7 @@ func TestAccResourceInstance_diskRawDeleted(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Start off with a Linode 1024
 			{
-				Config: tmpl.RawDisk(t, instanceName),
+				Config: tmpl.RawDisk(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -1045,7 +1084,7 @@ func TestAccResourceInstance_diskRawDeleted(t *testing.T) {
 			},
 			// Bump it to a 2048, and expand the disk
 			{
-				Config: tmpl.RawDiskDeleted(t, instanceName),
+				Config: tmpl.RawDiskDeleted(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -1072,7 +1111,7 @@ func TestAccResourceInstance_diskResize(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Start off with a Linode 1024
 			{
-				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -1085,7 +1124,7 @@ func TestAccResourceInstance_diskResize(t *testing.T) {
 			},
 			// Increase disk size
 			{
-				Config: tmpl.DiskConfigResized(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfigResized(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -1113,7 +1152,7 @@ func TestAccResourceInstance_withDiskLinodeUpsize(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Start with g6-nanode-1
 			{
-				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -1126,7 +1165,7 @@ func TestAccResourceInstance_withDiskLinodeUpsize(t *testing.T) {
 			},
 			// Upsize to g6-standard-1 with fully allocated disk
 			{
-				Config: tmpl.DiskConfigExpanded(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfigExpanded(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "51200"),
@@ -1154,7 +1193,7 @@ func TestAccResourceInstance_withDiskLinodeDownsize(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Start with g6-standard-1 with fully allocated disk
 			{
-				Config: tmpl.DiskConfigExpanded(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfigExpanded(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "51200"),
@@ -1167,7 +1206,7 @@ func TestAccResourceInstance_withDiskLinodeDownsize(t *testing.T) {
 			},
 			// Downsize to g6-nanode-1
 			{
-				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -1196,7 +1235,7 @@ func TestAccResourceInstance_downsizeWithoutDisk(t *testing.T) {
 
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.WithType(t, instanceName, acceptance.PublicKeyMaterial, "g6-standard-1"),
+				Config: tmpl.WithType(t, instanceName, acceptance.PublicKeyMaterial, "g6-standard-1", testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					checkInstanceDisks(&instance,
@@ -1206,7 +1245,7 @@ func TestAccResourceInstance_downsizeWithoutDisk(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.WithType(t, instanceName, acceptance.PublicKeyMaterial, "g6-nanode-1"),
+				Config: tmpl.WithType(t, instanceName, acceptance.PublicKeyMaterial, "g6-nanode-1", testRegion),
 				ExpectError: regexp.MustCompile(
 					"insufficient disk capacity"),
 			},
@@ -1229,7 +1268,7 @@ func TestAccResourceInstance_fullDiskSwapUpsize(t *testing.T) {
 
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.FullDisk(t, instanceName, acceptance.PublicKeyMaterial, stackScriptName, 256),
+				Config: tmpl.FullDisk(t, instanceName, acceptance.PublicKeyMaterial, stackScriptName, testRegion, 256),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					checkInstanceDisks(&instance,
@@ -1271,7 +1310,7 @@ func TestAccResourceInstance_fullDiskSwapUpsize(t *testing.T) {
 						}
 					}
 				},
-				Config:      tmpl.FullDisk(t, instanceName, acceptance.PublicKeyMaterial, stackScriptName, 512),
+				Config:      tmpl.FullDisk(t, instanceName, acceptance.PublicKeyMaterial, stackScriptName, testRegion, 512),
 				ExpectError: regexp.MustCompile("Error waiting for resize of Instance \\d+ Disk \\d+"),
 			},
 		},
@@ -1291,7 +1330,7 @@ func TestAccResourceInstance_swapUpsize(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.WithSwapSize(t, instanceName, acceptance.PublicKeyMaterial, 256),
+				Config: tmpl.WithSwapSize(t, instanceName, acceptance.PublicKeyMaterial, testRegion, 256),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					checkInstanceDisks(&instance,
@@ -1301,7 +1340,7 @@ func TestAccResourceInstance_swapUpsize(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.WithSwapSize(t, instanceName, acceptance.PublicKeyMaterial, 512),
+				Config: tmpl.WithSwapSize(t, instanceName, acceptance.PublicKeyMaterial, testRegion, 512),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					checkInstanceDisks(&instance,
@@ -1327,7 +1366,7 @@ func TestAccResourceInstance_swapDownsize(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.WithSwapSize(t, instanceName, acceptance.PublicKeyMaterial, 512),
+				Config: tmpl.WithSwapSize(t, instanceName, acceptance.PublicKeyMaterial, testRegion, 512),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					checkInstanceDisks(&instance,
@@ -1337,7 +1376,7 @@ func TestAccResourceInstance_swapDownsize(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.WithSwapSize(t, instanceName, acceptance.PublicKeyMaterial, 256),
+				Config: tmpl.WithSwapSize(t, instanceName, acceptance.PublicKeyMaterial, testRegion, 256),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					checkInstanceDisks(&instance,
@@ -1363,7 +1402,7 @@ func TestAccResourceInstance_diskResizeAndExpanded(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Start off with a Linode 1024
 			{
-				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -1377,7 +1416,7 @@ func TestAccResourceInstance_diskResizeAndExpanded(t *testing.T) {
 
 			// Bump to 2048 and expand disk
 			{
-				Config: tmpl.DiskConfigResizedExpanded(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfigResizedExpanded(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "51200"),
@@ -1410,7 +1449,7 @@ func TestAccResourceInstance_diskSlotReorder(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Start off with a Linode 1024
 			{
-				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfig(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "25600"),
@@ -1425,7 +1464,7 @@ func TestAccResourceInstance_diskSlotReorder(t *testing.T) {
 			},
 			// Add a disk, reorder the disks
 			{
-				Config: tmpl.DiskConfigReordered(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskConfigReordered(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "specs.0.disk", "51200"),
@@ -1464,7 +1503,7 @@ func TestAccResourceInstance_privateNetworking(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.PrivateNetworking(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.PrivateNetworking(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					checkInstancePrivateNetworkAttributes("linode_instance.foobar"),
@@ -1488,13 +1527,13 @@ func TestAccResourceInstance_stackScriptInstance(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.StackScript(t, instanceName),
+				Config: tmpl.StackScript(t, instanceName, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
 					resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
 					resource.TestCheckResourceAttr(resName, "image", acceptance.TestImageLatest),
-					resource.TestCheckResourceAttr(resName, "region", "us-east"),
+					resource.TestCheckResourceAttr(resName, "region", testRegion),
 					resource.TestCheckResourceAttr(resName, "group", "tf_test"),
 				),
 			},
@@ -1522,13 +1561,13 @@ func TestAccResourceInstance_diskImageUpdate(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.DiskBootImage(t, instanceName, acceptance.TestImagePrevious),
+				Config: tmpl.DiskBootImage(t, instanceName, acceptance.TestImagePrevious, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName)),
 			},
 			{
-				Config: tmpl.DiskBootImage(t, instanceName, acceptance.TestImageLatest),
+				Config: tmpl.DiskBootImage(t, instanceName, acceptance.TestImageLatest, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1561,14 +1600,10 @@ func TestAccResourceInstance_stackScriptDisk(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.DiskStackScript(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.DiskStackScript(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
-					// resource.TestCheckResourceAttr(resName, "type", "g6-nanode-1"),
-					// resource.TestCheckResourceAttr(resName, "region", "us-east"),
-					// resource.TestCheckResourceAttr(resName, "group", "tf_test"),
-					// checkComputeInstanceDisk(&instance, "disk", 3000),
 				),
 			},
 		},
@@ -1581,7 +1616,7 @@ func TestAccResourceInstance_typeChangeDiskImplicit(t *testing.T) {
 	resName := "linode_instance.foobar"
 
 	var instance linodego.Instance
-	//oldDiskSize := 0
+	// oldDiskSize := 0
 
 	instanceName := acctest.RandomWithPrefix("tf_test")
 
@@ -1592,7 +1627,7 @@ func TestAccResourceInstance_typeChangeDiskImplicit(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Create an initial instance
 			{
-				Config: tmpl.TypeChangeDisk(t, instanceName, "g6-nanode-1", true),
+				Config: tmpl.TypeChangeDisk(t, instanceName, "g6-nanode-1", testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1601,7 +1636,7 @@ func TestAccResourceInstance_typeChangeDiskImplicit(t *testing.T) {
 			},
 			// Upsize the instance and disk
 			{
-				Config: tmpl.TypeChangeDisk(t, instanceName, "g6-standard-1", true),
+				Config: tmpl.TypeChangeDisk(t, instanceName, "g6-standard-1", testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1610,7 +1645,7 @@ func TestAccResourceInstance_typeChangeDiskImplicit(t *testing.T) {
 			},
 			// Attempt a downsize
 			{
-				Config:      tmpl.TypeChangeDisk(t, instanceName, "g6-nanode-1", true),
+				Config:      tmpl.TypeChangeDisk(t, instanceName, "g6-nanode-1", testRegion, true),
 				ExpectError: regexp.MustCompile("Did you try to resize a linode with implicit"),
 			},
 		},
@@ -1631,7 +1666,7 @@ func TestAccResourceInstance_typeChangeDiskExplicit(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Create an instance with explicit disks
 			{
-				Config: tmpl.TypeChangeDiskExplicit(t, instanceName, "g6-nanode-1", true),
+				Config: tmpl.TypeChangeDiskExplicit(t, instanceName, "g6-nanode-1", testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1640,12 +1675,12 @@ func TestAccResourceInstance_typeChangeDiskExplicit(t *testing.T) {
 			},
 			// Attempt to resize the instance and disk and expect an error
 			{
-				Config:      tmpl.TypeChangeDiskExplicit(t, instanceName, "g6-standard-1", true),
+				Config:      tmpl.TypeChangeDiskExplicit(t, instanceName, "g6-standard-1", testRegion, true),
 				ExpectError: regexp.MustCompile("resize_disk requires that no explicit disks are defined"),
 			},
 			// Resize only the instance
 			{
-				Config: tmpl.TypeChangeDiskExplicit(t, instanceName, "g6-standard-1", false),
+				Config: tmpl.TypeChangeDiskExplicit(t, instanceName, "g6-standard-1", testRegion, false),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1670,7 +1705,7 @@ func TestAccResourceInstance_typeChangeNoDisks(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Create an instance with explicit disks
 			{
-				Config: tmpl.TypeChangeDiskNone(t, instanceName, "g6-nanode-1", true),
+				Config: tmpl.TypeChangeDiskNone(t, instanceName, "g6-nanode-1", testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1679,7 +1714,7 @@ func TestAccResourceInstance_typeChangeNoDisks(t *testing.T) {
 			},
 			// Attempt to resize the instance
 			{
-				Config: tmpl.TypeChangeDiskNone(t, instanceName, "g6-standard-1", true),
+				Config: tmpl.TypeChangeDiskNone(t, instanceName, "g6-standard-1", testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1688,7 +1723,7 @@ func TestAccResourceInstance_typeChangeNoDisks(t *testing.T) {
 			},
 			// Attempt to downsize the instance
 			{
-				Config: tmpl.TypeChangeDiskNone(t, instanceName, "g6-nanode-1", true),
+				Config: tmpl.TypeChangeDiskNone(t, instanceName, "g6-nanode-1", testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1712,7 +1747,7 @@ func TestAccResourceInstance_powerStateUpdates(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.BootState(t, instanceName, false),
+				Config: tmpl.BootState(t, instanceName, testRegion, false),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1720,7 +1755,7 @@ func TestAccResourceInstance_powerStateUpdates(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.BootState(t, instanceName, true),
+				Config: tmpl.BootState(t, instanceName, testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1728,7 +1763,7 @@ func TestAccResourceInstance_powerStateUpdates(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.BootState(t, instanceName, false),
+				Config: tmpl.BootState(t, instanceName, testRegion, false),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1737,7 +1772,7 @@ func TestAccResourceInstance_powerStateUpdates(t *testing.T) {
 			},
 			// Ensure an implicit reboot isn't triggered when booted == false
 			{
-				Config: tmpl.BootStateInterface(t, instanceName, false),
+				Config: tmpl.BootStateInterface(t, instanceName, testRegion, false),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1766,7 +1801,7 @@ func TestAccResourceInstance_powerStateUpdates(t *testing.T) {
 						t.Fatal("found reboot event when no reboot was expected")
 					}
 				},
-				Config: tmpl.BootStateInterface(t, instanceName, false),
+				Config: tmpl.BootStateInterface(t, instanceName, testRegion, false),
 			},
 		},
 	})
@@ -1785,7 +1820,7 @@ func TestAccResourceInstance_powerStateConfigUpdates(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.BootStateConfig(t, instanceName, false),
+				Config: tmpl.BootStateConfig(t, instanceName, testRegion, false),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1793,7 +1828,7 @@ func TestAccResourceInstance_powerStateConfigUpdates(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.BootStateConfig(t, instanceName, true),
+				Config: tmpl.BootStateConfig(t, instanceName, testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1801,7 +1836,7 @@ func TestAccResourceInstance_powerStateConfigUpdates(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.BootStateConfig(t, instanceName, false),
+				Config: tmpl.BootStateConfig(t, instanceName, testRegion, false),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1825,7 +1860,7 @@ func TestAccResourceInstance_powerStateConfigBooted(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.BootStateConfig(t, instanceName, true),
+				Config: tmpl.BootStateConfig(t, instanceName, testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1849,7 +1884,7 @@ func TestAccResourceInstance_powerStateBooted(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: tmpl.BootState(t, instanceName, true),
+				Config: tmpl.BootState(t, instanceName, testRegion, true),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(resName, &instance),
 					resource.TestCheckResourceAttr(resName, "label", instanceName),
@@ -1871,7 +1906,7 @@ func TestAccResourceInstance_powerStateNoImage(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config:      tmpl.BootStateNoImage(t, instanceName, true),
+				Config:      tmpl.BootStateNoImage(t, instanceName, testRegion, true),
 				ExpectError: regexp.MustCompile("booted requires an image or disk/config be defined"),
 			},
 		},
@@ -1880,6 +1915,10 @@ func TestAccResourceInstance_powerStateNoImage(t *testing.T) {
 
 func TestAccResourceInstance_ipv4Sharing(t *testing.T) {
 	t.Parallel()
+
+	// We need to manually override the region as IP sharing capabilities aren't
+	// explicitly mentioned by the API.
+	const region = "us-west"
 
 	failoverResName := "linode_instance.failover"
 
@@ -1892,11 +1931,11 @@ func TestAccResourceInstance_ipv4Sharing(t *testing.T) {
 		CheckDestroy: acceptance.CheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config:      tmpl.IPv4SharingBadInput(t, instanceName),
+				Config:      tmpl.IPv4SharingBadInput(t, instanceName, region),
 				ExpectError: regexp.MustCompile("expected ipv4 address, got"),
 			},
 			{
-				Config: tmpl.IPv4Sharing(t, instanceName),
+				Config: tmpl.IPv4Sharing(t, instanceName, region),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(failoverResName, &instance),
 					resource.TestCheckResourceAttr(failoverResName, "shared_ipv4.#", "1"),
@@ -1904,7 +1943,7 @@ func TestAccResourceInstance_ipv4Sharing(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.IPv4SharingAllocation(t, instanceName),
+				Config: tmpl.IPv4SharingAllocation(t, instanceName, region),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(failoverResName, &instance),
 					resource.TestCheckResourceAttr(failoverResName, "shared_ipv4.#", "1"),
@@ -1912,7 +1951,7 @@ func TestAccResourceInstance_ipv4Sharing(t *testing.T) {
 				),
 			},
 			{
-				Config: tmpl.IPv4SharingEmpty(t, instanceName),
+				Config: tmpl.IPv4SharingEmpty(t, instanceName, region),
 				Check: resource.ComposeTestCheckFunc(
 					acceptance.CheckInstanceExists(failoverResName, &instance),
 					resource.TestCheckResourceAttr(failoverResName, "shared_ipv4.#", "0"),
@@ -1936,7 +1975,7 @@ func TestAccResourceInstance_requestQuantity(t *testing.T) {
 
 	provider, providerMap := acceptance.CreateTestProvider()
 
-	acceptance.ModifyProviderMeta(t, provider,
+	acceptance.ModifyProviderMeta(provider,
 		func(ctx context.Context, config *helper.ProviderMeta) error {
 			config.Client.OnBeforeRequest(func(request *linodego.Request) error {
 				if startTime.IsZero() {
@@ -1959,7 +1998,7 @@ func TestAccResourceInstance_requestQuantity(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				// Provision a bunch of Linodes and wait for them to boot into an image
-				Config: tmpl.ManyLinodes(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.ManyLinodes(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 			},
 			{
 				PreConfig: func() {
@@ -1972,7 +2011,7 @@ func TestAccResourceInstance_requestQuantity(t *testing.T) {
 						t.Fatalf("too many requests: %f > %f", requestsPerSecond, maxRequestsPerSecond)
 					}
 				},
-				Config: tmpl.ManyLinodes(t, instanceName, acceptance.PublicKeyMaterial),
+				Config: tmpl.ManyLinodes(t, instanceName, acceptance.PublicKeyMaterial, testRegion),
 			},
 		},
 	})
@@ -2010,8 +2049,10 @@ func checkInstancePrivateNetworkAttributes(n string) resource.TestCheckFunc {
 	}
 }
 
-type testDiskFunc func(disk linodego.InstanceDisk) error
-type testDisksFunc func(disk []linodego.InstanceDisk) error
+type (
+	testDiskFunc  func(disk linodego.InstanceDisk) error
+	testDisksFunc func(disk []linodego.InstanceDisk) error
+)
 
 func testDisk(label string, diskTests ...testDiskFunc) testDisksFunc {
 	return func(disks []linodego.InstanceDisk) error {
@@ -2070,7 +2111,6 @@ func checkInstanceDisks(instance *linodego.Instance, disksTests ...testDisksFunc
 		}
 
 		instanceDisks, err := client.ListInstanceDisks(context.Background(), instance.ID, nil)
-
 		if err != nil {
 			return fmt.Errorf("Error fetching disks: %s", err)
 		}
@@ -2089,8 +2129,10 @@ func checkInstanceDisks(instance *linodego.Instance, disksTests ...testDisksFunc
 	}
 }
 
-type testConfigFunc func(config linodego.InstanceConfig) error
-type testConfigsFunc func(config []linodego.InstanceConfig) error
+type (
+	testConfigFunc  func(config linodego.InstanceConfig) error
+	testConfigsFunc func(config []linodego.InstanceConfig) error
+)
 
 // testConfig verifies a labeled config exists and runs many tests against that config
 func testConfig(label string, configTests ...testConfigFunc) testConfigsFunc {
@@ -2184,7 +2226,6 @@ func checkComputeInstanceConfigs(instance *linodego.Instance, configsTests ...te
 		}
 
 		instanceConfigs, err := client.ListInstanceConfigs(context.Background(), instance.ID, nil)
-
 		if err != nil {
 			return fmt.Errorf("Error fetching configs: %s", err)
 		}
@@ -2212,7 +2253,6 @@ func checkInstanceDiskExists(instance *linodego.Instance, label string, instance
 		}
 
 		instanceDisks, err := client.ListInstanceDisks(context.Background(), instance.ID, nil)
-
 		if err != nil {
 			return fmt.Errorf("Error fetching disks: %s", err)
 		}
@@ -2241,7 +2281,6 @@ func checkComputeInstanceDisk(instance *linodego.Instance, label string, size in
 		}
 
 		instanceDisks, err := client.ListInstanceDisks(context.Background(), instance.ID, nil)
-
 		if err != nil {
 			return fmt.Errorf("Error fetching disks: %s", err)
 		}
